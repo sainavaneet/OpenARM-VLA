@@ -116,14 +116,8 @@ _config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "conf")
 
 @hydra.main(version_base=None, config_path=_config_path, config_name="config")
 def main(cfg: DictConfig) -> None:
-    """
-    Main training function using Hydra configuration.
+
     
-    You can override any config value from command line, e.g.:
-        python -m OpenARM-VLA.src.train batch_size=512 latent_dim=512
-        python -m OpenARM-VLA.src.train data_directory=/path/to/openarm_dataset
-        python -m OpenARM-VLA.src.train wandb.name=my_experiment
-    """
     if not cfg.data_directory:
         raise ValueError("data_directory is required")
 
