@@ -7,6 +7,23 @@ name = "openarm-vla"
 version = "0.0.0"
 description = "OpenArm VLA repo"
 requires-python = ">=3.10"
+dependencies = [
+  "omegaconf",
+  "ftfy",
+  "wandb",
+  "hydra-core",
+  "peft",
+  "colorama",
+  "h5py",
+  "tqdm",
+  "opencv-python",
+  "einops",
+  "dataloader",
+  "numpy<2",
+  "pillow==11.3.0",
+  "packaging<24",
+  "clip",
+]
 
 [tool.setuptools]
 package-dir = {"" = "."}
