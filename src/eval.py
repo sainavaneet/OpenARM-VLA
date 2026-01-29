@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import random
 import sys
@@ -27,8 +28,11 @@ parser.add_argument("--mamba_checkpoint", type=str, required=True, help="Path to
 parser.add_argument("--run_dir", type=str, default=None, help="Run dir for model_scaler.pkl (defaults to checkpoint directory).")
 parser.add_argument("--lang_emb", type=str, default=None, help="Path to language embedding pkl for OpenArm tasks.")
 parser.add_argument("--config", type=str, default="conf/config.yaml", help="Path to OpenARM-VLA config.yaml (defaults to ./config.yaml).")
+parser.add_argument("--model_type", type=str, default=None, choices=["mamba", "transformer"], help="Model type to use (mamba or transformer).")
 parser.add_argument("--dataset_root", type=str, required=True, help="Dataset root to rebuild scaler if model_scaler.pkl is missing.")
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
+parser.add_argument("--num_rollouts", type=int, default=1, help="Number of rollouts to run for the chosen slot.")
+parser.add_argument("--output_metrics", type=str, default=None, help="Optional path to write JSON metrics.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during play.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
 parser.add_argument("--task", type=str, default="Isaac-Lift-Cube-OpenArm-Play-v0", help="Name of the task.")
@@ -36,7 +40,7 @@ parser.add_argument("--real-time", action="store_true", default=False, help="Run
 parser.add_argument("--settle_steps", type=int, default=50)
 parser.add_argument("--max_steps", type=int, default=100)
 parser.add_argument("--target_slot", type=int, default=-1, help="Target slot index 0/1. If not set, random once at startup.")
-
+parser.add_argument("--success_threshold", type=float, default=0.04, help="Success threshold for the task.")
 cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 
@@ -134,7 +138,7 @@ def _update_episode_state(env, target_object_name: str, dones: torch.Tensor, tar
     else:
         target = torch.tensor(target_pos, device=obj_pos.device, dtype=obj_pos.dtype)
         error = torch.norm(target - obj_pos, dim=1)
-    success_mask = error < 0.1
+    success_mask = error < args_cli.success_threshold
     done_mask = (dones > 0.5)
     return done_mask, success_mask, error
 
@@ -194,13 +198,14 @@ def _resolve_scene_layout(env) -> dict[str, str]:
     raise KeyError(f"Unsupported scene layout. Available Entities: {sorted(scene_keys)}")
 
 
-def _build_mamba_policy(
+def _build_policy(
     checkpoint_path: str,
     run_dir: str | None,
     dataset_root: str,
     device: str,
     lang_emb_dim: int,
     config_path: str,
+    model_type: str | None,
 ):
     from omegaconf import OmegaConf
     from MambaVLA.model_factory import create_mambavla_model
@@ -209,6 +214,10 @@ def _build_mamba_policy(
 
     cfg = OmegaConf.load(config_path)
 
+    resolved_model_type = model_type or cfg.get("model_type", "mamba")
+    transformer_cfg = cfg.get("transformer", None)
+
+    print(f"[INFO] Model type: {resolved_model_type}")
     model = create_mambavla_model(
         dataloader=None,
         camera_names=["agentview", "eye_in_hand"],
@@ -231,6 +240,8 @@ def _build_mamba_policy(
         use_language_encoder=True,
         freeze_language_encoder=True,
         clip_model_name="ViT-B/32",
+        model_type=resolved_model_type,
+        transformer_cfg=transformer_cfg,
     )
 
     state = torch.load(checkpoint_path, map_location=device, weights_only=True)
@@ -327,13 +338,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectMARLEnvCfg, agent_cfg):
         raise SystemExit(f"Missing lang embedding key: {lang_key}")
     lang_emb = lang_embeddings[lang_key]
 
-    policy = _build_mamba_policy(
+    policy = _build_policy(
         checkpoint_path=args_cli.mamba_checkpoint,
         run_dir=args_cli.run_dir,
         dataset_root=args_cli.dataset_root,
         device=env.unwrapped.device,
         lang_emb_dim=lang_emb.shape[-1],
         config_path=args_cli.config,
+        model_type=args_cli.model_type,
     )
 
     dt = env.unwrapped.step_dt
@@ -344,15 +356,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectMARLEnvCfg, agent_cfg):
         _step_env(env, _zero_actions(env))
 
     timestep = 0
+    rollouts_done = 0
+    success_count = 0
+    episode_lengths: list[int] = []
+    infer_time_total = 0.0
+    infer_calls = 0
     episode_steps = torch.zeros(env.unwrapped.num_envs, device=env.unwrapped.device, dtype=torch.int32)
 
     try:
-        while simulation_app.is_running():
+        while simulation_app.is_running() and rollouts_done < args_cli.num_rollouts:
             start_time = time.time()
 
             mamba_obs = _build_mamba_obs(env, lang_emb, env.unwrapped.device)
             with torch.inference_mode():
+                infer_start = time.perf_counter()
                 actions = policy.predict(mamba_obs)
+                infer_time_total += time.perf_counter() - infer_start
+                infer_calls += 1
             if actions.dim() == 1:
                 actions = actions.unsqueeze(0)
             _, _, dones, _ = _step_env(env, actions)
@@ -364,12 +384,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectMARLEnvCfg, agent_cfg):
             done_mask = success_mask | max_mask
             if torch.any(done_mask):
                 _print_episode_success(env, target_color, target_object_name, done_mask, success_mask, episode_steps, error)
+                done_ids = torch.where(done_mask)[0].tolist()
+                for i in done_ids:
+                    rollouts_done += 1
+                    if success_mask[i].item():
+                        success_count += 1
+                    episode_lengths.append(int(episode_steps[i].item()))
+                    if rollouts_done >= args_cli.num_rollouts:
+                        break
                 episode_steps = torch.where(done_mask, torch.zeros_like(episode_steps), episode_steps)
-                env.reset()
-                _move_cubes_to_fixed_slots(env, object_map)
-                policy.reset()
-                for _ in range(args_cli.settle_steps):
-                    _step_env(env, _zero_actions(env))
+                if rollouts_done < args_cli.num_rollouts:
+                    env.reset()
+                    _move_cubes_to_fixed_slots(env, object_map)
+                    policy.reset()
+                    for _ in range(args_cli.settle_steps):
+                        _step_env(env, _zero_actions(env))
 
             if args_cli.video:
                 timestep += 1
@@ -382,6 +411,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectMARLEnvCfg, agent_cfg):
     except KeyboardInterrupt:
         print("[INFO] Interrupted by user. Shutting down...")
     finally:
+        avg_infer_ms = (infer_time_total / infer_calls * 1000.0) if infer_calls else 0.0
+        avg_episode_steps = (sum(episode_lengths) / len(episode_lengths)) if episode_lengths else 0.0
+        success_rate = (success_count / rollouts_done) if rollouts_done else 0.0
+        metrics = {
+            "model_type": args_cli.model_type or "mamba",
+            "target_slot": args_cli.target_slot,
+            "num_rollouts": rollouts_done,
+            "successes": success_count,
+            "success_rate": success_rate,
+            "avg_episode_steps": avg_episode_steps,
+            "avg_inference_ms": avg_infer_ms,
+        }
+        print(f"[METRICS] {json.dumps(metrics, indent=2)}")
+        if args_cli.output_metrics:
+            out_path = Path(args_cli.output_metrics).expanduser().resolve()
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(json.dumps(metrics, indent=2))
         env.close()
 
 
