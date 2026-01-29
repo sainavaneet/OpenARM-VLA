@@ -1,0 +1,8 @@
+**/datasets/
+**/runs/
+**/outputs/
+**/wandb/
+**/checkpoints/
+**/*.pth
+**/*.pt
+**/*.ckpt
