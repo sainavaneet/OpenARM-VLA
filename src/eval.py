@@ -31,7 +31,7 @@ parser.add_argument("--dataset_root", type=str, required=True, help="Dataset roo
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during play.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
-parser.add_argument("--task", type=str, default="Isaac-Lift-RandomColor-Cube-OpenArm-Play-v0", help="Name of the task.")
+parser.add_argument("--task", type=str, default="Isaac-Lift-Cube-OpenArm-Play-v0", help="Name of the task.")
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--settle_steps", type=int, default=50)
 parser.add_argument("--max_steps", type=int, default=100)
@@ -125,11 +125,15 @@ def _step_env(env, actions):
     return obs, reward, done, info
 
 
-def _update_episode_state(env, target_object_name: str, dones: torch.Tensor):
+def _update_episode_state(env, target_object_name: str, dones: torch.Tensor, target_pos: tuple[float, float, float] | None = None):
     obj = env.unwrapped.scene[target_object_name]
     obj_pos = obj.data.root_pos_w[:, :3]
-    cmd = env.unwrapped.command_manager.get_command("object_pose")[:, :3]
-    error = torch.norm(cmd - obj_pos, dim=1)
+    if target_pos is None:
+        cmd = env.unwrapped.command_manager.get_command("object_pose")[:, :3]
+        error = torch.norm(cmd - obj_pos, dim=1)
+    else:
+        target = torch.tensor(target_pos, device=obj_pos.device, dtype=obj_pos.dtype)
+        error = torch.norm(target - obj_pos, dim=1)
     success_mask = error < 0.1
     done_mask = (dones > 0.5)
     return done_mask, success_mask, error
@@ -164,13 +168,21 @@ def _load_mamba_lang_embeddings(path: str, device: str) -> dict[str, torch.Tenso
 
 
 _SLOT_TO_LANG_KEY = {
-    0: "pick_the_red_cube_from_infront_of_the_robot",
-    1: "pick_the_green_cube_from_slightly_near_to_the_right_side_of_the_table",
+    0: "pick_the_cube_and_lift_it_to_the_left_side_of_the_table",
+    1: "pick_the_cube_and_reach_to_the_right_side_but_slighlty_lower",
+}
+
+_SLOT_TO_TARGET_POS = {
+    0: (0.25, 0.3, 0.25),
+    1: (0.25, -0.2, 0.2),
 }
 
 
 def _resolve_scene_layout(env) -> dict[str, str]:
     scene_keys = set(env.unwrapped.scene.keys())
+    if {"object"}.issubset(scene_keys):
+        # Single-object task layout.
+        return {"red": "object", "green": "object"}
     if {"object", "distractor"}.issubset(scene_keys):
         # In TwoCube tasks, the target choice swaps which color is "object".
         target_object_name = os.environ.get("OPENARM_TARGET_OBJECT", "object_red")
@@ -293,6 +305,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectMARLEnvCfg, agent_cfg):
     if target_color not in object_map:
         raise SystemExit(f"Scene does not contain expected color '{target_color}'. Available: {sorted(object_map.keys())}")
     target_object_name = object_map[target_color]
+    target_pos = _SLOT_TO_TARGET_POS.get(args_cli.target_slot)
 
 
     if args_cli.video:
@@ -345,7 +358,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectMARLEnvCfg, agent_cfg):
             _, _, dones, _ = _step_env(env, actions)
 
             episode_steps += 1
-            done_mask, success_mask, error = _update_episode_state(env, target_object_name, dones)
+            done_mask, success_mask, error = _update_episode_state(env, target_object_name, dones, target_pos)
 
             max_mask = episode_steps >= args_cli.max_steps
             done_mask = success_mask | max_mask

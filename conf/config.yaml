@@ -1,7 +1,7 @@
 
 
 data_directory: /home/navaneet/OPENARM/OpenARM-VLA/datasets/openarm_pick_the_color_cube_tasks
-max_len_data: 50
+max_len_data: 100
 demos_per_task: 50
 
 obs_dim: 9
