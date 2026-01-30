@@ -8,10 +8,12 @@ import os
 import random
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
-
+from src.utils import *
 import numpy as np
 import torch
+from omegaconf import OmegaConf
 
 
 CLI_ARGS_DIR = "openarm_isaac_lab/scripts/reinforcement_learning/rsl_rl"
@@ -24,49 +26,36 @@ from isaaclab.app import AppLauncher
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--mamba_checkpoint", type=str, required=True, help="Path to MambaVLA checkpoint (.pth).")
-parser.add_argument("--run_dir", type=str, default=None, help="Run dir for model_scaler.pkl (defaults to checkpoint directory).")
-parser.add_argument("--lang_emb", type=str, default=None, help="Path to language embedding pkl for OpenArm tasks.")
 parser.add_argument("--config", type=str, default="conf/config.yaml", help="Path to OpenARM-VLA config.yaml (defaults to ./config.yaml).")
-parser.add_argument("--model_type", type=str, default=None, choices=["mamba", "transformer"], help="Model type to use (mamba or transformer).")
-parser.add_argument("--dataset_root", type=str, required=True, help="Dataset root to rebuild scaler if model_scaler.pkl is missing.")
-parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
-parser.add_argument("--num_rollouts", type=int, default=1, help="Number of rollouts to run for the chosen slot.")
-parser.add_argument("--output_metrics", type=str, default=None, help="Optional path to write JSON metrics.")
-parser.add_argument("--video", action="store_true", default=False, help="Record videos during play.")
-parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
-parser.add_argument("--task", type=str, default="Isaac-Lift-Cube-OpenArm-Play-v0", help="Name of the task.")
-parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
-parser.add_argument("--settle_steps", type=int, default=50)
-parser.add_argument("--max_steps", type=int, default=100)
-parser.add_argument("--target_slot", type=int, default=-1, help="Target slot index 0/1. If not set, random once at startup.")
-parser.add_argument("--success_threshold", type=float, default=0.04, help="Success threshold for the task.")
 cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 
 
 args_cli, hydra_args = parser.parse_known_args()
-if args_cli.video:
+
+
+
+def _load_eval_cfg(config_path: str) -> dict:
+    cfg = OmegaConf.load(config_path)
+    eval_cfg = cfg.get("eval_model")
+    if eval_cfg is None:
+        cfg_dir = Path(config_path).resolve().parent
+        fallback = cfg_dir / "eval_model.yaml"
+        if fallback.exists():
+            eval_cfg = OmegaConf.load(fallback)
+        else:
+            raise SystemExit("eval_model section is required in config.")
+    return eval_cfg
+
+
+
+
+
+eval_cfg = _load_eval_cfg(args_cli.config)
+_prepare_eval_cfg(eval_cfg)
+
+if eval_cfg.get("video", False):
     args_cli.enable_cameras = True
-
-if args_cli.target_slot not in (0, 1):
-    args_cli.target_slot = random.choice([0, 1])
-    print(f"[INFO] No --target_slot provided. Randomly selected target_slot={args_cli.target_slot}.")
-
-_slot_to_object = {0: "object_red", 1: "object_green"}
-os.environ["OPENARM_TARGET_OBJECT"] = _slot_to_object[args_cli.target_slot]
-
-if args_cli.lang_emb is None:
-    dataset_root = Path(args_cli.dataset_root).resolve()
-    dataset_name = dataset_root.name
-    repo_root = dataset_root.parents[1] if len(dataset_root.parents) > 1 else dataset_root.parent
-    candidate_file = repo_root / "MambaVLA" / "language_embeddings" / f"{dataset_name}.pkl"
-    if not candidate_file.exists():
-        raise SystemExit(
-            "Could not find language embedding file based on --dataset_root. "
-            "Pass --lang_emb explicitly."
-        )
-    args_cli.lang_emb = str(candidate_file)
 
 sys.argv = [sys.argv[0]] + hydra_args
 
@@ -129,7 +118,7 @@ def _step_env(env, actions):
     return obs, reward, done, info
 
 
-def _update_episode_state(env, target_object_name: str, dones: torch.Tensor, target_pos: tuple[float, float, float] | None = None):
+def _update_episode_state(env, target_object_name: str, dones: torch.Tensor, success_threshold: float, target_pos: tuple[float, float, float] | None = None):
     obj = env.unwrapped.scene[target_object_name]
     obj_pos = obj.data.root_pos_w[:, :3]
     if target_pos is None:
@@ -138,12 +127,22 @@ def _update_episode_state(env, target_object_name: str, dones: torch.Tensor, tar
     else:
         target = torch.tensor(target_pos, device=obj_pos.device, dtype=obj_pos.dtype)
         error = torch.norm(target - obj_pos, dim=1)
-    success_mask = error < args_cli.success_threshold
+    success_mask = error < success_threshold
     done_mask = (dones > 0.5)
     return done_mask, success_mask, error
 
 
-def _print_episode_success(env, target_color: str, target_object_name: str, done_mask: torch.Tensor, success_mask: torch.Tensor, episode_steps: torch.Tensor, error: torch.Tensor) -> None:
+def _print_episode_success(
+    env,
+    task_key: str,
+    task_name: str,
+    task_index: int,
+    target_object_name: str,
+    done_mask: torch.Tensor,
+    success_mask: torch.Tensor,
+    episode_steps: torch.Tensor,
+    error: torch.Tensor,
+) -> None:
     if not torch.any(done_mask):
         return
     obj = env.unwrapped.scene[target_object_name]
@@ -153,33 +152,37 @@ def _print_episode_success(env, target_color: str, target_object_name: str, done
         status = "SUCCESS" if success_mask[i].item() else "FAIL"
         steps = int(episode_steps[i].item())
         print(
-            f"[EPISODE] env={i} color={target_color} {status} height={heights[i].item():.3f} "
+            f"[EPISODE] env={i} task={task_index} name={task_name} {status} "
+            f"height={heights[i].item():.3f} "
             f"steps={steps} err={error[i].item():.3f}"
         )
 
 
-def _load_mamba_lang_embeddings(path: str, device: str) -> dict[str, torch.Tensor]:
-    import pickle
-
-    with open(path, "rb") as f:
-        task_embs = pickle.load(f)
-    for k, v in task_embs.items():
-        if isinstance(v, torch.Tensor):
-            task_embs[k] = v.detach().to(device).float()
-        else:
-            task_embs[k] = torch.tensor(v, device=device, dtype=torch.float32)
-    return task_embs
 
 
-_SLOT_TO_LANG_KEY = {
-    0: "pick_the_cube_and_lift_it_to_the_left_side_of_the_table",
-    1: "pick_the_cube_and_reach_to_the_right_side_but_slighlty_lower",
-}
+def _parse_target_pose(raw: str) -> tuple[float, float, float]:
+    entry = raw.split(";")[0].strip()
+    if not entry:
+        raise ValueError("Empty target_pose in tasks.yaml.")
+    parts = [p.strip() for p in entry.split(",")]
+    if len(parts) != 3:
+        raise ValueError(f"Invalid target_pose '{entry}'. Expected x,y,z.")
+    return tuple(float(p) for p in parts)
 
-_SLOT_TO_TARGET_POS = {
-    0: (0.25, 0.3, 0.25),
-    1: (0.25, -0.2, 0.2),
-}
+
+def _set_fixed_object_pose_env(env, pose: tuple[float, float, float]) -> None:
+    cmd_cfg = getattr(getattr(env.unwrapped, "command_manager", None), "cfg", None)
+    if cmd_cfg is None or not hasattr(cmd_cfg, "object_pose"):
+        raise RuntimeError("Could not access command_manager.cfg.object_pose to set target pose.")
+    cmd_cfg.object_pose.ranges.pos_x = (pose[0], pose[0])
+    cmd_cfg.object_pose.ranges.pos_y = (pose[1], pose[1])
+    cmd_cfg.object_pose.ranges.pos_z = (pose[2], pose[2])
+
+
+def _choose_target_object(object_map: dict[str, str]) -> str:
+    if "red" in object_map:
+        return object_map["red"]
+    return next(iter(object_map.values()))
 
 
 def _resolve_scene_layout(env) -> dict[str, str]:
@@ -270,7 +273,7 @@ def _build_policy(
     return model
 
 
-def _build_mamba_obs(env, lang_emb: torch.Tensor, device: str) -> dict[str, torch.Tensor]:
+def _build_mamba_obs(env, lang_input: torch.Tensor | str | list[str], device: str) -> dict[str, torch.Tensor]:
     cam_link0 = env.unwrapped.scene.sensors["camera_link0"].data.output["rgb"]
     cam_fixed = env.unwrapped.scene.sensors["camera_fixed"].data.output["rgb"]
     robot = env.unwrapped.scene["robot"]
@@ -282,152 +285,195 @@ def _build_mamba_obs(env, lang_emb: torch.Tensor, device: str) -> dict[str, torc
     eye_in_hand = cam_link0.float().permute(0, 3, 1, 2) / 255.0
 
     batch = agentview.shape[0]
-    if lang_emb.dim() == 1:
-        lang_batch = lang_emb.unsqueeze(0).repeat(batch, 1)
-    else:
-        lang_batch = lang_emb
-        if lang_batch.shape[0] != batch:
-            lang_batch = lang_batch.repeat(batch, 1)
-
-    return {
+    obs = {
         "agentview_image": agentview.unsqueeze(1).to(device),
         "eye_in_hand_image": eye_in_hand.unsqueeze(1).to(device),
-        "lang_emb": lang_batch.unsqueeze(1).to(device),
         "robot_states": robot_states.unsqueeze(1).to(device),
     }
+    if isinstance(lang_input, torch.Tensor):
+        if lang_input.dim() == 1:
+            lang_batch = lang_input.unsqueeze(0).repeat(batch, 1)
+        else:
+            lang_batch = lang_input
+            if lang_batch.shape[0] != batch:
+                lang_batch = lang_batch.repeat(batch, 1)
+        obs["lang_emb"] = lang_batch.unsqueeze(1).to(device)
+    else:
+        if isinstance(lang_input, (list, tuple)):
+            if len(lang_input) == batch:
+                lang_list = [str(x) for x in lang_input]
+            elif len(lang_input) == 1:
+                lang_list = [str(lang_input[0])] * batch
+            else:
+                lang_list = [str(lang_input[0])] * batch
+        else:
+            lang_list = [str(lang_input)] * batch
+        obs["lang"] = lang_list
+    return obs
 
 
-@hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
+@hydra_task_config(eval_cfg.task, "rsl_rl_cfg_entry_point")
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectMARLEnvCfg, agent_cfg):
-    env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
+    env_cfg.scene.num_envs = eval_cfg.num_envs if eval_cfg.get("num_envs") is not None else env_cfg.scene.num_envs
     env_cfg.episode_length_s = 30.0
     env_cfg.seed = agent_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
-    render_mode = "rgb_array" if (args_cli.video or args_cli.enable_cameras) else None
-    env = gym.make(args_cli.task, cfg=env_cfg, render_mode=render_mode)
+    tasks_cfg = OmegaConf.load(eval_cfg.tasks_config)
+    if "tasks" not in tasks_cfg:
+        raise SystemExit(f"tasks not found in {eval_cfg.tasks_config}.")
+    task_keys = (
+        [k.strip() for k in eval_cfg.task_keys.split(",") if k.strip()]
+        if eval_cfg.get("task_keys")
+        else sorted(tasks_cfg.tasks.keys())
+    )
+
+    render_mode = "rgb_array" if (eval_cfg.get("video", False) or args_cli.enable_cameras) else None
+    env = gym.make(eval_cfg.task, cfg=env_cfg, render_mode=render_mode)
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
 
     object_map = _resolve_scene_layout(env)
-    if args_cli.target_slot not in (0, 1):
-        args_cli.target_slot = random.choice([0, 1])
-    target_color = "red" if args_cli.target_slot == 0 else "green"
-    if target_color not in object_map:
-        raise SystemExit(f"Scene does not contain expected color '{target_color}'. Available: {sorted(object_map.keys())}")
-    target_object_name = object_map[target_color]
-    target_pos = _SLOT_TO_TARGET_POS.get(args_cli.target_slot)
+    target_object_name = _choose_target_object(object_map)
 
 
-    if args_cli.video:
+    if eval_cfg.get("video", False):
         video_kwargs = {
             "video_folder": os.path.join("logs", "mamba_vla", "videos"),
             "step_trigger": lambda step: step == 0,
-            "video_length": args_cli.video_length,
+            "video_length": eval_cfg.video_length,
             "disable_logger": True,
         }
         print("[INFO] Recording videos during play.")
         print_dict(video_kwargs, nesting=4)
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
-    lang_embeddings = _load_mamba_lang_embeddings(args_cli.lang_emb, env.unwrapped.device)
-    lang_key = _SLOT_TO_LANG_KEY.get(args_cli.target_slot)
-    if lang_key is None:
-        raise SystemExit(f"Unsupported target_slot={args_cli.target_slot}; expected 0 or 1.")
-    if lang_key not in lang_embeddings:
-        raise SystemExit(f"Missing lang embedding key: {lang_key}")
-    lang_emb = lang_embeddings[lang_key]
-
     policy = _build_policy(
-        checkpoint_path=args_cli.mamba_checkpoint,
-        run_dir=args_cli.run_dir,
-        dataset_root=args_cli.dataset_root,
+        checkpoint_path=eval_cfg.model_checkpoint,
+        run_dir=eval_cfg.run_dir,
+        dataset_root=eval_cfg.dataset_root,
         device=env.unwrapped.device,
-        lang_emb_dim=lang_emb.shape[-1],
+        lang_emb_dim=int(eval_cfg.get("lang_emb_dim", 512)),
         config_path=args_cli.config,
-        model_type=args_cli.model_type,
+        model_type=eval_cfg.model_type,
     )
 
     dt = env.unwrapped.step_dt
-    env.reset()
-    _move_cubes_to_fixed_slots(env, object_map)
-
-    for _ in range(args_cli.settle_steps):
-        _step_env(env, _zero_actions(env))
-
-    timestep = 0
-    rollouts_done = 0
-    success_count = 0
-    episode_lengths: list[int] = []
-    infer_time_total = 0.0
-    infer_calls = 0
-    episode_steps = torch.zeros(env.unwrapped.num_envs, device=env.unwrapped.device, dtype=torch.int32)
+    all_metrics: list[dict[str, float | int | str]] = []
 
     try:
-        while simulation_app.is_running() and rollouts_done < args_cli.num_rollouts:
-            start_time = time.time()
+        for task_index, task_key in enumerate(task_keys):
+            task_cfg = tasks_cfg.tasks.get(task_key)
+            if task_cfg is None:
+                print(f"[WARN] task_key '{task_key}' not found in tasks.yaml. Skipping.")
+                continue
+            if "target_pose" not in task_cfg or "name" not in task_cfg:
+                print(f"[WARN] task '{task_key}' missing name/target_pose. Skipping.")
+                continue
 
-            mamba_obs = _build_mamba_obs(env, lang_emb, env.unwrapped.device)
-            with torch.inference_mode():
-                infer_start = time.perf_counter()
-                actions = policy.predict(mamba_obs)
-                infer_time_total += time.perf_counter() - infer_start
-                infer_calls += 1
-            if actions.dim() == 1:
-                actions = actions.unsqueeze(0)
-            _, _, dones, _ = _step_env(env, actions)
+            lang_text = task_cfg.name
 
-            episode_steps += 1
-            done_mask, success_mask, error = _update_episode_state(env, target_object_name, dones, target_pos)
+            target_pos = _parse_target_pose(task_cfg.target_pose)
+            _set_fixed_object_pose_env(env, target_pos)
 
-            max_mask = episode_steps >= args_cli.max_steps
-            done_mask = success_mask | max_mask
-            if torch.any(done_mask):
-                _print_episode_success(env, target_color, target_object_name, done_mask, success_mask, episode_steps, error)
-                done_ids = torch.where(done_mask)[0].tolist()
-                for i in done_ids:
-                    rollouts_done += 1
-                    if success_mask[i].item():
-                        success_count += 1
-                    episode_lengths.append(int(episode_steps[i].item()))
-                    if rollouts_done >= args_cli.num_rollouts:
+            env.reset()
+            _move_cubes_to_fixed_slots(env, object_map)
+            policy.reset()
+            for _ in range(eval_cfg.settle_steps):
+                _step_env(env, _zero_actions(env))
+
+            timestep = 0
+            rollouts_done = 0
+            success_count = 0
+            episode_lengths: list[int] = []
+            infer_time_total = 0.0
+            infer_calls = 0
+            episode_steps = torch.zeros(env.unwrapped.num_envs, device=env.unwrapped.device, dtype=torch.int32)
+
+            while simulation_app.is_running() and rollouts_done < eval_cfg.num_rollouts:
+                start_time = time.time()
+
+                mamba_obs = _build_mamba_obs(env, lang_text, env.unwrapped.device)
+                with torch.inference_mode():
+                    infer_start = time.perf_counter()
+                    actions = policy.predict(mamba_obs)
+                    infer_time_total += time.perf_counter() - infer_start
+                    infer_calls += 1
+                if actions.dim() == 1:
+                    actions = actions.unsqueeze(0)
+                _, _, dones, _ = _step_env(env, actions)
+
+                episode_steps += 1
+                done_mask, success_mask, error = _update_episode_state(
+                    env,
+                    target_object_name,
+                    dones,
+                    eval_cfg.success_threshold,
+                    target_pos,
+                )
+
+                max_mask = episode_steps >= eval_cfg.max_steps
+                done_mask = success_mask | max_mask
+                if torch.any(done_mask):
+                    _print_episode_success(
+                        env,
+                        task_key,
+                        task_cfg.name,
+                        task_index,
+                        target_object_name,
+                        done_mask,
+                        success_mask,
+                        episode_steps,
+                        error,
+                    )
+                    done_ids = torch.where(done_mask)[0].tolist()
+                    for i in done_ids:
+                        rollouts_done += 1
+                        if success_mask[i].item():
+                            success_count += 1
+                        episode_lengths.append(int(episode_steps[i].item()))
+                    if rollouts_done >= eval_cfg.num_rollouts:
                         break
-                episode_steps = torch.where(done_mask, torch.zeros_like(episode_steps), episode_steps)
-                if rollouts_done < args_cli.num_rollouts:
-                    env.reset()
-                    _move_cubes_to_fixed_slots(env, object_map)
-                    policy.reset()
-                    for _ in range(args_cli.settle_steps):
-                        _step_env(env, _zero_actions(env))
+                    episode_steps = torch.where(done_mask, torch.zeros_like(episode_steps), episode_steps)
+                    if rollouts_done < eval_cfg.num_rollouts:
+                        env.reset()
+                        _move_cubes_to_fixed_slots(env, object_map)
+                        policy.reset()
+                        for _ in range(eval_cfg.settle_steps):
+                            _step_env(env, _zero_actions(env))
 
-            if args_cli.video:
-                timestep += 1
-                if timestep == args_cli.video_length:
-                    break
+                if eval_cfg.get("video", False):
+                    timestep += 1
+                    if timestep == eval_cfg.video_length:
+                        break
 
-            sleep_time = dt - (time.time() - start_time)
-            if args_cli.real_time and sleep_time > 0:
-                time.sleep(sleep_time)
+                sleep_time = dt - (time.time() - start_time)
+                if eval_cfg.get("real_time", False) and sleep_time > 0:
+                    time.sleep(sleep_time)
+
+            avg_infer_ms = (infer_time_total / infer_calls * 1000.0) if infer_calls else 0.0
+            avg_episode_steps = (sum(episode_lengths) / len(episode_lengths)) if episode_lengths else 0.0
+            success_rate = (success_count / rollouts_done) if rollouts_done else 0.0
+            metrics = {
+                "task": task_cfg.name,
+                "model_type": eval_cfg.model_type or "mamba",
+                "num_rollouts": rollouts_done,
+                "successes": success_count,
+                "success_rate": success_rate,
+                "avg_episode_steps": avg_episode_steps,
+                "avg_inference_ms": avg_infer_ms,
+            }
+            all_metrics.append(metrics)
+            print(f"[METRICS] {json.dumps(metrics, indent=2)}")
+            if eval_cfg.get("video", False):
+                break
     except KeyboardInterrupt:
         print("[INFO] Interrupted by user. Shutting down...")
     finally:
-        avg_infer_ms = (infer_time_total / infer_calls * 1000.0) if infer_calls else 0.0
-        avg_episode_steps = (sum(episode_lengths) / len(episode_lengths)) if episode_lengths else 0.0
-        success_rate = (success_count / rollouts_done) if rollouts_done else 0.0
-        metrics = {
-            "model_type": args_cli.model_type or "mamba",
-            "target_slot": args_cli.target_slot,
-            "num_rollouts": rollouts_done,
-            "successes": success_count,
-            "success_rate": success_rate,
-            "avg_episode_steps": avg_episode_steps,
-            "avg_inference_ms": avg_infer_ms,
-        }
-        print(f"[METRICS] {json.dumps(metrics, indent=2)}")
-        if args_cli.output_metrics:
-            out_path = Path(args_cli.output_metrics).expanduser().resolve()
+        if eval_cfg.get("output_metrics"):
+            out_path = Path(eval_cfg.output_metrics).expanduser().resolve()
             out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_text(json.dumps(metrics, indent=2))
+            out_path.write_text(json.dumps(all_metrics, indent=2))
         env.close()
 
 

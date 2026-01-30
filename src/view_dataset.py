@@ -16,10 +16,12 @@ except Exception as exc:  # pragma: no cover - dependency check
     raise SystemExit("Pillow is required for Tk image display. Install `pillow`.") from exc
 
 
-def _load_demo(path: Path):
+def _load_demo(path: Path, demo_key: str | None = None):
     with h5py.File(path, "r") as f:
-        demo_key = next(iter(f["data"].keys()))
-        demo = f["data"][demo_key]
+        data_grp = f["data"]
+        if demo_key is None:
+            demo_key = next(iter(data_grp.keys()))
+        demo = data_grp[demo_key]
         obs = demo["obs"]
         cam_fixed = obs["agentview_rgb"][...]
         cam_link0 = obs["eye_in_hand_rgb"][...]
@@ -63,25 +65,39 @@ def main():
     }
 
     root_var = tk.StringVar(value=args.root)
-    color_var = tk.StringVar(value="all")
+    file_var = tk.StringVar(value="")
+    demo_var = tk.StringVar(value="")
 
-    def _demo_path(demo_key: str) -> Path:
-        return Path(root_var.get()) / f"{demo_key}.hdf5"
+    def _demo_path(file_name: str) -> Path:
+        root_path = Path(root_var.get())
+        if root_path.is_file():
+            return root_path
+        return root_path / file_name
 
-    def _list_demos() -> list[str]:
-        demos: list[str] = []
-        for p in sorted(Path(root_var.get()).glob("demo_*.hdf5")):
-            demos.append(p.stem)
-        return demos
+    def _list_files() -> list[str]:
+        root_path = Path(root_var.get())
+        if root_path.is_file():
+            return [root_path.name]
+        return [p.name for p in sorted(root_path.glob("*.hdf5"))]
 
-    def _load(demo_key: str) -> bool:
-        path = _demo_path(demo_key)
+    def _list_demo_keys(file_name: str) -> list[str]:
+        path = _demo_path(file_name)
+        if not path.exists():
+            return []
+        try:
+            with h5py.File(path, "r") as f:
+                return sorted(list(f["data"].keys()))
+        except Exception:
+            return []
+
+    def _load(file_name: str, demo_key: str | None) -> bool:
+        path = _demo_path(file_name)
         if not path.exists():
             return False
-        cam_link0, cam_fixed, rewards, actions = _load_demo(path)
+        cam_link0, cam_fixed, rewards, actions = _load_demo(path, demo_key)
         state.update(
             {
-                "demo": demo_key,
+                "demo": demo_key or "",
                 "idx": 0,
                 "path": path,
                 "cam_link0": cam_link0,
@@ -93,20 +109,24 @@ def main():
         _update()
         return True
 
-    def _find_next(start: str, direction: int) -> str | None:
-        demos = _list_demos()
-        if not demos:
-            return None
-        demos = sorted(demos)
-        if start not in demos:
-            return demos[0]
-        idx = demos.index(start)
-        next_idx = (idx + direction) % len(demos)
-        return demos[next_idx]
+    def _refresh_files(select_file: str | None = None):
+        file_list.delete(0, tk.END)
+        files = _list_files()
+        for f in files:
+            file_list.insert(tk.END, f)
+        if files:
+            target = select_file if select_file is not None else files[0]
+            if target in files:
+                idx = files.index(target)
+                file_list.selection_set(idx)
+                file_list.activate(idx)
+                _refresh_demos(target)
+        else:
+            _clear_state("No files found.")
 
-    def _refresh_list(select_demo: str | None = None):
+    def _refresh_demos(file_name: str, select_demo: str | None = None):
         demo_list.delete(0, tk.END)
-        demos = _list_demos()
+        demos = _list_demo_keys(file_name)
         for d in demos:
             demo_list.insert(tk.END, d)
         if demos:
@@ -115,24 +135,27 @@ def main():
                 idx = demos.index(target)
                 demo_list.selection_set(idx)
                 demo_list.activate(idx)
-                _load(target)
+                _load(file_name, target)
         else:
-            state.update(
-                {
-                    "demo": 0,
-                    "idx": 0,
-                    "path": None,
-                    "cam_link0": None,
-                    "cam_fixed": None,
-                    "rewards": None,
-                    "actions": None,
-                    "photo1": None,
-                    "photo2": None,
-                }
-            )
-            label1.configure(image="")
-            label2.configure(image="")
-            status.configure(text="No demos found for this color.")
+            _clear_state("No demos found in selected file.")
+
+    def _clear_state(msg: str):
+        state.update(
+            {
+                "demo": "",
+                "idx": 0,
+                "path": None,
+                "cam_link0": None,
+                "cam_fixed": None,
+                "rewards": None,
+                "actions": None,
+                "photo1": None,
+                "photo2": None,
+            }
+        )
+        label1.configure(image="")
+        label2.configure(image="")
+        status.configure(text=msg)
 
     def _update():
         cam_link0 = state["cam_link0"]
@@ -178,39 +201,17 @@ def main():
         except Exception:
             return
 
-    def _next_demo():
-        nxt = _find_next(state["demo"], 1)
-        if nxt is not None:
-            _refresh_list(select_demo=nxt)
-
-    def _prev_demo():
-        prv = _find_next(state["demo"], -1)
-        if prv is not None:
-            _refresh_list(select_demo=prv)
-
     def _delete_demo():
         path = state.get("path")
         if path and path.exists():
-            current = state.get("demo", "")
-            demos_before = _list_demos()
-            os.remove(path)
-            status.configure(text=f"Deleted {path}")
-            if current in demos_before:
-                idx = demos_before.index(current)
-                if demos_before:
-                    nxt_idx = idx if idx < len(demos_before) - 1 else max(0, len(demos_before) - 2)
-                else:
-                    nxt_idx = 0
-                demos_after = _list_demos()
-                if demos_after:
-                    if nxt_idx >= len(demos_after):
-                        nxt_idx = len(demos_after) - 1
-                    nxt = demos_after[nxt_idx]
-                else:
-                    nxt = None
-            else:
-                nxt = _find_next(current, 1)
-            _refresh_list(select_demo=nxt)
+            file_name = path.name
+            demo_key = state.get("demo", "")
+            if demo_key:
+                with h5py.File(path, "a") as f:
+                    if demo_key in f["data"]:
+                        del f["data"][demo_key]
+                        status.configure(text=f"Deleted {file_name}::{demo_key}")
+            _refresh_demos(file_name)
 
     # UI
     frame = ttk.Frame(root, padding=8)
@@ -226,29 +227,42 @@ def main():
         selected = filedialog.askdirectory(initialdir=root_var.get())
         if selected:
             root_var.set(selected)
-            _refresh_list()
+            _refresh_files()
 
     ttk.Button(topbar, text="Browse", command=_choose_root).pack(side=tk.LEFT, padx=4)
-    ttk.Button(topbar, text="Refresh", command=lambda: _refresh_list()).pack(side=tk.LEFT, padx=6)
+    ttk.Button(topbar, text="Refresh", command=lambda: _refresh_files()).pack(side=tk.LEFT, padx=6)
     ttk.Button(topbar, text="Quit", command=root.destroy).pack(side=tk.LEFT, padx=6)
 
     list_frame = ttk.Frame(frame)
     list_frame.grid(row=1, column=0, sticky="ns", padx=(0, 8))
-    ttk.Label(list_frame, text="Demos").pack(anchor="w")
-    demo_list = tk.Listbox(list_frame, height=18, width=24)
+    ttk.Label(list_frame, text="Files").pack(anchor="w")
+    file_list = tk.Listbox(list_frame, height=8, width=28)
+    file_list.pack(fill=tk.BOTH, expand=True)
+    ttk.Label(list_frame, text="Demos").pack(anchor="w", pady=(6, 0))
+    demo_list = tk.Listbox(list_frame, height=10, width=28)
     demo_list.pack(fill=tk.BOTH, expand=True)
 
-    def _on_select(event):
+    def _on_file_select(event):
+        sel = file_list.curselection()
+        if sel:
+            idx = sel[0]
+            val = file_list.get(idx)
+            file_var.set(val)
+            _refresh_demos(val)
+
+    def _on_demo_select(event):
         sel = demo_list.curselection()
         if sel:
             idx = sel[0]
             val = demo_list.get(idx)
+            demo_var.set(val)
             try:
-                _load(val)
+                _load(file_var.get(), val)
             except Exception:
                 return
 
-    demo_list.bind("<<ListboxSelect>>", _on_select)
+    file_list.bind("<<ListboxSelect>>", _on_file_select)
+    demo_list.bind("<<ListboxSelect>>", _on_demo_select)
 
     label1 = ttk.Label(frame)
     label2 = ttk.Label(frame)
@@ -260,9 +274,7 @@ def main():
 
     ttk.Button(controls, text="Prev Frame", command=_prev_frame).grid(row=0, column=0, padx=4)
     ttk.Button(controls, text="Next Frame", command=_next_frame).grid(row=0, column=1, padx=4)
-    ttk.Button(controls, text="Prev Demo", command=_prev_demo).grid(row=0, column=2, padx=4)
-    ttk.Button(controls, text="Next Demo", command=_next_demo).grid(row=0, column=3, padx=4)
-    ttk.Button(controls, text="Delete Demo", command=_delete_demo).grid(row=0, column=4, padx=4)
+    ttk.Button(controls, text="Delete Demo", command=_delete_demo).grid(row=0, column=2, padx=4)
 
     frame_slider = ttk.Scale(frame, from_=0, to=0, orient=tk.HORIZONTAL, command=_on_slider)
     frame_slider.grid(row=3, column=0, columnspan=3, sticky="ew", padx=6, pady=(0, 6))
@@ -273,7 +285,7 @@ def main():
     root.rowconfigure(0, weight=1)
     root.columnconfigure(0, weight=1)
 
-    _refresh_list(select_demo=args.demo or None)
+    _refresh_files(select_file=None)
 
     root.mainloop()
 

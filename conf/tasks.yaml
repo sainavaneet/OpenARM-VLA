@@ -1,0 +1,13 @@
+
+
+
+tasks:
+  task0:
+    name: pick_the_cube_and_lift_it_to_the_middle_of_the_table
+    target_pose: "0.25,0.0,0.25"
+  task1:
+    name: pick_the_cube_and_reach_to_the_right_side_but_slighlty_lower
+    target_pose: "0.25,-0.20,0.20"
+  task2:
+    name: pick_the_cube_and_reach_to_the_left_side_but_slighlty_higher
+    target_pose: "0.30,0.10,0.35"

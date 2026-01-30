@@ -4,10 +4,36 @@ set -euo pipefail
 unset DISPLAY
 export PYOPENGL_PLATFORM=egl
 
-DATA_DIR="/workspace/OpenARM-VLA/datasets/openarm_cube_lift_two_pose_tasks"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON_BIN=""
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON_BIN="python3"
+elif command -v python >/dev/null 2>&1; then
+  PYTHON_BIN="python"
+elif [[ -x "/workspace/isaaclab/_isaac_sim/python.sh" ]]; then
+  PYTHON_BIN="/workspace/isaaclab/_isaac_sim/python.sh"
+else
+  echo "ERROR: python not found (tried python3, python, /workspace/isaaclab/_isaac_sim/python.sh)" >&2
+  exit 1
+fi
+DATA_DIR_CFG="$("$PYTHON_BIN" - <<'PY'
+from omegaconf import OmegaConf
+from pathlib import Path
+print(Path(OmegaConf.load("conf/generate_dataset.yaml").dataset_root).resolve())
+PY
+)"
+DATASET_NAME="$(basename "${DATA_DIR_CFG}")"
+if [[ -d "${DATA_DIR_CFG}" ]]; then
+  DATA_DIR="${DATA_DIR_CFG}"
+elif [[ -d "${ROOT_DIR}/datasets/${DATASET_NAME}" ]]; then
+  DATA_DIR="${ROOT_DIR}/datasets/${DATASET_NAME}"
+else
+  echo "ERROR: dataset directory not found: ${DATA_DIR_CFG}" >&2
+  exit 1
+fi
 TASK_NAME="Isaac-Lift-Cube-OpenArm-Play-v0"
-NUM_EPOCHS=500
-SAVE_FREQ=100
+NUM_EPOCHS=3000
+SAVE_FREQ=500
 BATCH_SIZE=256
 MAX_LEN=100
 DEMOS=100
@@ -18,15 +44,29 @@ NUM_ENVS=1
 SETTLE_STEPS=50
 MAX_STEPS=100
 WANDB_ENABLED=False
-WANDB_NAME="cube_lift_two_pose_tasks"
+WANDB_NAME="cube_lift_direction_tasks_compare"
 WANDB_PROJECT="OpenARM_compare_runs"
 WANDB_ENTITY="sainavaneet"
-RUN_ROOT="/workspace/OpenARM-VLA/checkpoints/compare_runs"
-OUT_ROOT="/workspace/OpenARM-VLA/outputs/compare_runs"
-STAMP="$(date +%Y-%m-%d_%H-%M-%S)"
-OUT_DIR="${OUT_ROOT}/${STAMP}"
 
-mkdir -p "${OUT_DIR}"
+DATE_STAMP="$(date +%Y-%m-%d)"
+TIME_STAMP="$(date +%H-%M-%S)"
+OUT_ROOT="${ROOT_DIR}/outputs/compare_runs"
+OUT_DIR="${OUT_ROOT}/${DATE_STAMP}/${TIME_STAMP}"
+export OUT_DIR
+
+if ! mkdir -p "${OUT_DIR}"; then
+  OUT_ROOT="${HOME}/OpenARM-outputs/compare_runs"
+  OUT_DIR="${OUT_ROOT}/${DATE_STAMP}/${TIME_STAMP}"
+  export OUT_DIR
+  if ! mkdir -p "${OUT_DIR}"; then
+    OUT_ROOT="/tmp/OpenARM-outputs/compare_runs"
+    OUT_DIR="${OUT_ROOT}/${DATE_STAMP}/${TIME_STAMP}"
+    export OUT_DIR
+    mkdir -p "${OUT_DIR}"
+  fi
+fi
+LOG_FILE="${OUT_DIR}/compare_run.log"
+exec > >(tee -a "${LOG_FILE}") 2>&1
 
 resolve_checkpoint() {
   local run_dir="$1"
@@ -49,7 +89,7 @@ resolve_checkpoint() {
 
 train_model() {
   local model_type="$1"
-  local run_dir="${RUN_ROOT}/${model_type}/${STAMP}"
+  local run_dir="${ROOT_DIR}/outputs/${DATE_STAMP}/${TIME_STAMP}/train/${model_type}/$(basename "${DATA_DIR}")"
   mkdir -p "${run_dir}"
 
   echo "[INFO] Training ${model_type} -> ${run_dir}" >&2
@@ -84,22 +124,37 @@ train_model() {
 eval_model() {
   local model_type="$1"
   local ckpt="$2"
+  local eval_cfg="${ROOT_DIR}/conf/eval_model.yaml"
+  local eval_cfg_bak
+  eval_cfg_bak="$(mktemp)"
+  cp "${eval_cfg}" "${eval_cfg_bak}"
+  cat > "${eval_cfg}" <<EOF
+model_checkpoint: ${ckpt}
+run_dir: null
+lang_emb: null
+dataset_root: ${DATA_DIR}
+model_type: ${model_type}
+checkpoints_root: ${ROOT_DIR}/outputs
+num_envs: ${NUM_ENVS}
+num_rollouts: ${ROLLOUTS_PER_SLOT}
+output_metrics: ${OUT_DIR}/${model_type}.json
+video: false
+video_length: 200
+task: ${TASK_NAME}
+real_time: false
+settle_steps: ${SETTLE_STEPS}
+max_steps: ${MAX_STEPS}
+success_threshold: 0.04
+task_keys: null
+tasks_config: ${ROOT_DIR}/conf/tasks.yaml
+EOF
 
-  for slot in 0 1; do
-    /workspace/isaaclab/_isaac_sim/python.sh src/eval.py \
-      --task "${TASK_NAME}" \
-      --mamba_checkpoint "${ckpt}" \
-      --dataset_root "${DATA_DIR}" \
-      --model_type "${model_type}" \
-      --num_envs "${NUM_ENVS}" \
-      --settle_steps "${SETTLE_STEPS}" \
-      --target_slot "${slot}" \
-      --max_steps "${MAX_STEPS}" \
-      --enable_cameras \
-      --headless \
-      --num_rollouts "${ROLLOUTS_PER_SLOT}" \
-      --output_metrics "${OUT_DIR}/${model_type}_slot${slot}.json"
-  done
+  /workspace/isaaclab/_isaac_sim/python.sh src/eval.py \
+    --config "${ROOT_DIR}/conf/config.yaml" \
+    --enable_cameras \
+    --headless
+
+  mv "${eval_cfg_bak}" "${eval_cfg}"
 }
 
 run_dir_mamba="$(train_model mamba)"
@@ -110,35 +165,31 @@ run_dir_transformer="$(train_model transformer)"
 ckpt_transformer="$(resolve_checkpoint "${run_dir_transformer}")"
 eval_model transformer "${ckpt_transformer}"
 
-/workspace/isaaclab/_isaac_sim/python.sh - <<'PY'
+"$PYTHON_BIN" - <<'PY'
 import json
+import os
 from pathlib import Path
 
-out_dir = Path("/workspace/OpenARM-VLA/outputs/compare_runs")
-latest = sorted(out_dir.glob("*"))[-1]
+out_dir = Path(os.environ["OUT_DIR"])
 
-def load_metrics(model, slot):
-    path = latest / f"{model}_slot{slot}.json"
+def load_metrics(model):
+    path = out_dir / f"{model}.json"
     return json.loads(path.read_text())
 
 def load_train_seconds(model):
-    path = latest / f"train_{model}_seconds.txt"
+    path = out_dir / f"train_{model}_seconds.txt"
     return int(path.read_text().strip())
 
-summary = {"run_dir": str(latest), "models": {}}
+summary = {"run_dir": str(out_dir), "models": {}}
 
 for model in ("mamba", "transformer"):
-    m0 = load_metrics(model, 0)
-    m1 = load_metrics(model, 1)
+    metrics = load_metrics(model)
     summary["models"][model] = {
         "train_seconds": load_train_seconds(model),
-        "slots": {"left": m0, "right": m1},
-        "avg_success_rate": (m0["success_rate"] + m1["success_rate"]) / 2.0,
-        "avg_inference_ms": (m0["avg_inference_ms"] + m1["avg_inference_ms"]) / 2.0,
-        "avg_episode_steps": (m0["avg_episode_steps"] + m1["avg_episode_steps"]) / 2.0,
+        "tasks": metrics,
     }
 
-summary_path = latest / "compare_summary.json"
+summary_path = out_dir / "compare_summary.json"
 summary_path.write_text(json.dumps(summary, indent=2))
 print(f"[INFO] Wrote {summary_path}")
 PY

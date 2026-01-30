@@ -1,46 +1,16 @@
 #!/bin/bash
 
 
-unset DISPLAY
-export PYOPENGL_PLATFORM=egl
-# export LD_LIBRARY_PATH=/home/navaneet/miniconda3/envs/openarm/lib/python3.11/site-packages/nvidia/cuda_nvrtc/lib:$LD_LIBRARY_PATH
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Headless-safe defaults for Isaac Sim
+# unset DISPLAY
+# export PYOPENGL_PLATFORM=egl
 
-NUM_DEMOS=100
+export LD_LIBRARY_PATH=/home/navaneet/miniconda3/envs/openarm/lib/python3.11/site-packages/nvidia/cuda_nvrtc/lib:$LD_LIBRARY_PATH
 
-/workspace/isaaclab/_isaac_sim/python.sh src/generate_dataset.py \
-  --task Isaac-Lift-Cube-OpenArm-Play-v0 \
-  --num_demos $NUM_DEMOS \
-  --num_envs 1 \
-  --dataset_root /workspace/OpenARM-VLA/datasets/cube_lift_2 \
-  --target_poses "0.25,0.3,0.25" \
-  --save_pose_index 0 \
-  --checkpoint /workspace/OpenARM-VLA/src/RL_policy/model_1999.pt \
+python "${ROOT_DIR}/src/generate_dataset.py" \
+  --headless \
   --enable_cameras \
-  --settle_steps 100 \
-  --headless 
-
-
-
-/workspace/isaaclab/_isaac_sim/python.sh src/generate_dataset.py \
-  --task Isaac-Lift-Cube-OpenArm-Play-v0 \
-  --num_demos $NUM_DEMOS \
-  --num_envs 1 \
-  --dataset_root /workspace/OpenARM-VLA/datasets/cube_lift_2 \
-  --target_poses "0.25,-0.2,0.2" \
-  --save_pose_index 1 \
-  --checkpoint /workspace/OpenARM-VLA/src/RL_policy/model_1999.pt \
-  --enable_cameras \
-  --settle_steps 100 \
-  --headless 
-
-TASK_MAP_JSON='{
-  "pose0_task": "pick_the_cube_and_lift_it_to_the_left_side_of_the_table",
-  "pose1_task": "pick_the_cube_and_reach_to_the_right_side_but_slighlty_lower"
-}'
-
-
-/workspace/isaaclab/_isaac_sim/python.sh src/merge_demos.py \
-  --root /workspace/OpenARM-VLA/datasets/cube_lift_2 \
-  --out /workspace/OpenARM-VLA/datasets/openarm_cube_lift_two_pose_tasks \
-  --task_map_json "$TASK_MAP_JSON"
+  --dataset_config "${ROOT_DIR}/conf/generate_dataset.yaml" \
+  --tasks_config "${ROOT_DIR}/conf/tasks.yaml"

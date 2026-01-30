@@ -1,10 +1,18 @@
 
 
-data_directory: /home/navaneet/OPENARM/OpenARM-VLA/datasets/openarm_pick_the_color_cube_tasks
+defaults:
+  - generate_dataset
+  - eval_model
+  - mamba
+  - tasks
+  - transformer
+  - _self_
+
+data_directory: ${dataset_root}
+
+
 max_len_data: 100
 demos_per_task: 50
-
-model_type: mamba
 
 obs_dim: 9
 action_dim: 8
@@ -21,15 +29,6 @@ sampling_steps: 4
 
 batch_size: 256
 num_epochs: 300
-
-transformer:
-  n_heads: 8
-  attn_pdrop: 0.1
-  resid_pdrop: 0.1
-  mlp_pdrop: 0.0
-  use_rot_embed: false
-  rotary_xpos: false
-  bias: false
 
 learning_rate: 1e-4
 transformer_weight_decay: 0.05
@@ -54,4 +53,4 @@ wandb:
 
 device: null
 
-save_dir: ./checkpoints/${basename:${data_directory}}/${now:%Y-%m-%d}/${now:%H-%M-%S}/
+save_dir: ./outputs/train/${model_type}/${basename:${data_directory}}/${now:%Y-%m-%d}/${now:%H-%M-%S}/
