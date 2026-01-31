@@ -7,7 +7,7 @@ checkpoints_root: ./outputs
 num_envs: 1
 num_rollouts: 10
 output_metrics: null
-video: false
+video: True
 video_length: 200
 task: Isaac-Lift-Cube-OpenArm-Play-v0
 real_time: false

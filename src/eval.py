@@ -1,19 +1,21 @@
 """Run OpenARM-VLA inference in the OpenArm fixed-position task (dataset-consistent)."""
 
-from __future__ import annotations
-
 import argparse
 import json
 import os
-import random
 import sys
 import time
-from datetime import datetime
-from pathlib import Path
-from src.utils import *
-import numpy as np
+
 import torch
 from omegaconf import OmegaConf
+
+from src.utils import (
+    _build_eval_metrics,
+    _prepare_eval_cfg,
+    _set_eval_video_task_folder,
+    _setup_eval_video_recording,
+    _rename_latest_video,
+)
 
 
 CLI_ARGS_DIR = "openarm_isaac_lab/scripts/reinforcement_learning/rsl_rl"
@@ -27,6 +29,7 @@ from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--config", type=str, default="conf/config.yaml", help="Path to OpenARM-VLA config.yaml (defaults to ./config.yaml).")
+parser.add_argument("--model_type", type=str, default=None, help="Override eval model type (e.g., mamba).")
 cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 
@@ -34,14 +37,13 @@ AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 
 
-
-def _load_eval_cfg(config_path: str) -> dict:
+def _load_eval_cfg(config_path):
     cfg = OmegaConf.load(config_path)
     eval_cfg = cfg.get("eval_model")
     if eval_cfg is None:
-        cfg_dir = Path(config_path).resolve().parent
-        fallback = cfg_dir / "eval_model.yaml"
-        if fallback.exists():
+        cfg_dir = os.path.dirname(os.path.abspath(config_path))
+        fallback = os.path.join(cfg_dir, "eval_model.yaml")
+        if os.path.exists(fallback):
             eval_cfg = OmegaConf.load(fallback)
         else:
             raise SystemExit("eval_model section is required in config.")
@@ -52,7 +54,12 @@ def _load_eval_cfg(config_path: str) -> dict:
 
 
 eval_cfg = _load_eval_cfg(args_cli.config)
+if args_cli.checkpoint:
+    eval_cfg.model_checkpoint = args_cli.checkpoint
+if args_cli.model_type:
+    eval_cfg.model_type = args_cli.model_type
 _prepare_eval_cfg(eval_cfg)
+print(f"[INFO] Using checkpoint: {eval_cfg.model_checkpoint}")
 
 if eval_cfg.get("video", False):
     args_cli.enable_cameras = True
@@ -64,7 +71,7 @@ simulation_app = app_launcher.app
 
 import gymnasium as gym
 
-from isaaclab.envs import DirectMARLEnv, DirectMARLEnvCfg, ManagerBasedRLEnvCfg, multi_agent_to_single_agent
+from isaaclab.envs import DirectMARLEnv, multi_agent_to_single_agent
 from isaaclab.utils.dict import print_dict
 
 import isaaclab_tasks  # noqa: F401
@@ -72,37 +79,9 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import openarm.tasks  # noqa: F401
 
-RIGHT_SLOT_POS = (0.40, 0.0, 0.055)
-LEFT_SLOT_POS = (0.35, -0.20, 0.055)
-DROP_HEIGHT = 0.02
 
 
-def _set_object_pose(obj, xyz: tuple[float, float, float]) -> None:
-    with torch.inference_mode():
-        root_state = obj.data.root_state_w.clone()
-        root_state[:, 0:3] = torch.tensor(xyz, device=root_state.device)
-        root_state[:, 7:13] = 0.0
-        obj.write_root_state_to_sim(root_state)
-        zero_vel = torch.zeros((root_state.shape[0], 6), device=root_state.device)
-        obj.write_root_velocity_to_sim(zero_vel)
-        if hasattr(obj, "root_physx_view") and hasattr(obj.root_physx_view, "wake_up"):
-            obj.root_physx_view.wake_up()
-        if hasattr(obj, "root_physx_view") and hasattr(obj.root_physx_view, "set_rigid_body_disable_sleeping"):
-            obj.root_physx_view.set_rigid_body_disable_sleeping(True)
-
-
-def _move_cubes_to_fixed_slots(env, object_map: dict[str, str]) -> None:
-    scene = env.unwrapped.scene
-    left_slot = (LEFT_SLOT_POS[0], LEFT_SLOT_POS[1], LEFT_SLOT_POS[2] + DROP_HEIGHT)
-    right_slot = (RIGHT_SLOT_POS[0], RIGHT_SLOT_POS[1], RIGHT_SLOT_POS[2] + DROP_HEIGHT)
-
-    if "red" in object_map:
-        _set_object_pose(scene[object_map["red"]], right_slot)
-    if "green" in object_map:
-        _set_object_pose(scene[object_map["green"]], left_slot)
-
-
-def _zero_actions(env) -> torch.Tensor:
+def _zero_actions(env):
     return torch.zeros(
         (env.unwrapped.num_envs, env.unwrapped.action_manager.total_action_dim),
         device=env.unwrapped.device,
@@ -118,8 +97,9 @@ def _step_env(env, actions):
     return obs, reward, done, info
 
 
-def _update_episode_state(env, target_object_name: str, dones: torch.Tensor, success_threshold: float, target_pos: tuple[float, float, float] | None = None):
-    obj = env.unwrapped.scene[target_object_name]
+
+def _update_episode_state(env, dones, success_threshold, target_pos=None):
+    obj = env.unwrapped.scene[_auto_target_object(env)]
     obj_pos = obj.data.root_pos_w[:, :3]
     if target_pos is None:
         cmd = env.unwrapped.command_manager.get_command("object_pose")[:, :3]
@@ -134,18 +114,17 @@ def _update_episode_state(env, target_object_name: str, dones: torch.Tensor, suc
 
 def _print_episode_success(
     env,
-    task_key: str,
-    task_name: str,
-    task_index: int,
-    target_object_name: str,
-    done_mask: torch.Tensor,
-    success_mask: torch.Tensor,
-    episode_steps: torch.Tensor,
-    error: torch.Tensor,
-) -> None:
+    task_key,
+    task_name,
+    task_index,
+    done_mask,
+    success_mask,
+    episode_steps,
+    error,
+):
     if not torch.any(done_mask):
         return
-    obj = env.unwrapped.scene[target_object_name]
+    obj = env.unwrapped.scene[_auto_target_object(env)]
     heights = obj.data.root_pos_w[:, 2]
     done_ids = torch.where(done_mask)[0].tolist()
     for i in done_ids:
@@ -160,7 +139,7 @@ def _print_episode_success(
 
 
 
-def _parse_target_pose(raw: str) -> tuple[float, float, float]:
+def _parse_target_pose(raw):
     entry = raw.split(";")[0].strip()
     if not entry:
         raise ValueError("Empty target_pose in tasks.yaml.")
@@ -170,7 +149,7 @@ def _parse_target_pose(raw: str) -> tuple[float, float, float]:
     return tuple(float(p) for p in parts)
 
 
-def _set_fixed_object_pose_env(env, pose: tuple[float, float, float]) -> None:
+def _set_fixed_object_pose_env(env, pose):
     cmd_cfg = getattr(getattr(env.unwrapped, "command_manager", None), "cfg", None)
     if cmd_cfg is None or not hasattr(cmd_cfg, "object_pose"):
         raise RuntimeError("Could not access command_manager.cfg.object_pose to set target pose.")
@@ -179,36 +158,35 @@ def _set_fixed_object_pose_env(env, pose: tuple[float, float, float]) -> None:
     cmd_cfg.object_pose.ranges.pos_z = (pose[2], pose[2])
 
 
-def _choose_target_object(object_map: dict[str, str]) -> str:
-    if "red" in object_map:
-        return object_map["red"]
-    return next(iter(object_map.values()))
-
-
-def _resolve_scene_layout(env) -> dict[str, str]:
+def _auto_target_object(env):
     scene_keys = set(env.unwrapped.scene.keys())
-    if {"object"}.issubset(scene_keys):
-        # Single-object task layout.
-        return {"red": "object", "green": "object"}
-    if {"object", "distractor"}.issubset(scene_keys):
-        # In TwoCube tasks, the target choice swaps which color is "object".
-        target_object_name = os.environ.get("OPENARM_TARGET_OBJECT", "object_red")
-        if target_object_name == "object_green":
-            return {"green": "object", "red": "distractor"}
-        return {"red": "object", "green": "distractor"}
-    if {"object_red", "object_green"}.issubset(scene_keys):
-        return {"red": "object_red", "green": "object_green"}
-    raise KeyError(f"Unsupported scene layout. Available Entities: {sorted(scene_keys)}")
+    if "object" in scene_keys:
+        return "object"
+    candidates = [
+        key for key in scene_keys
+        if key not in {"robot", "terrain", "ground", "table"}
+        and not key.startswith("camera")
+    ]
+    if len(candidates) == 1:
+        return candidates[0]
+    if candidates:
+        chosen = sorted(candidates)[0]
+        print(f"[WARN] Multiple scene objects found; using '{chosen}'.")
+        return chosen
+    raise KeyError(f"Could not infer target object. Scene keys: {sorted(scene_keys)}")
+
+
 
 
 def _build_policy(
-    checkpoint_path: str,
-    run_dir: str | None,
-    dataset_root: str,
-    device: str,
-    lang_emb_dim: int,
-    config_path: str,
-    model_type: str | None,
+    checkpoint_path,
+    run_dir,
+    dataset_root,
+    device,
+    lang_emb_dim,
+    config_path,
+    model_type,
+    allowed_tasks,
 ):
     from omegaconf import OmegaConf
     from MambaVLA.model_factory import create_mambavla_model
@@ -264,6 +242,7 @@ def _build_policy(
             max_len_data=cfg.max_len_data,
             chunck_size=cfg.chunck_size,
             demos_per_task=cfg.demos_per_task,
+            allowed_tasks=allowed_tasks,
         )
         scaler = MinMaxScaler(dataset.get_all_actions(), True, device)
         model.set_scaler(scaler)
@@ -273,7 +252,7 @@ def _build_policy(
     return model
 
 
-def _build_mamba_obs(env, lang_input: torch.Tensor | str | list[str], device: str) -> dict[str, torch.Tensor]:
+def _build_mamba_obs(env, lang_input, device):
     cam_link0 = env.unwrapped.scene.sensors["camera_link0"].data.output["rgb"]
     cam_fixed = env.unwrapped.scene.sensors["camera_fixed"].data.output["rgb"]
     robot = env.unwrapped.scene["robot"]
@@ -313,7 +292,7 @@ def _build_mamba_obs(env, lang_input: torch.Tensor | str | list[str], device: st
 
 
 @hydra_task_config(eval_cfg.task, "rsl_rl_cfg_entry_point")
-def main(env_cfg: ManagerBasedRLEnvCfg | DirectMARLEnvCfg, agent_cfg):
+def main(env_cfg, agent_cfg):
     env_cfg.scene.num_envs = eval_cfg.num_envs if eval_cfg.get("num_envs") is not None else env_cfg.scene.num_envs
     env_cfg.episode_length_s = 30.0
     env_cfg.seed = agent_cfg.seed
@@ -333,20 +312,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectMARLEnvCfg, agent_cfg):
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
 
-    object_map = _resolve_scene_layout(env)
-    target_object_name = _choose_target_object(object_map)
-
-
+    video_root = None
     if eval_cfg.get("video", False):
-        video_kwargs = {
-            "video_folder": os.path.join("logs", "mamba_vla", "videos"),
-            "step_trigger": lambda step: step == 0,
-            "video_length": eval_cfg.video_length,
-            "disable_logger": True,
-        }
-        print("[INFO] Recording videos during play.")
-        print_dict(video_kwargs, nesting=4)
-        env = gym.wrappers.RecordVideo(env, **video_kwargs)
+        env, video_root = _setup_eval_video_recording(
+            env,
+            eval_cfg,
+            gym.wrappers.RecordVideo,
+            print_dict=print_dict,
+            sensor_name="main_camera",
+        )
 
     policy = _build_policy(
         checkpoint_path=eval_cfg.model_checkpoint,
@@ -356,10 +330,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectMARLEnvCfg, agent_cfg):
         lang_emb_dim=int(eval_cfg.get("lang_emb_dim", 512)),
         config_path=args_cli.config,
         model_type=eval_cfg.model_type,
+        allowed_tasks=[tasks_cfg.tasks[k].name for k in task_keys if k in tasks_cfg.tasks],
     )
 
     dt = env.unwrapped.step_dt
-    all_metrics: list[dict[str, float | int | str]] = []
+    all_metrics = []
+    total_rollouts = 0
+    total_successes = 0
+    total_episode_lengths = []
+    total_infer_time = 0.0
+    total_infer_calls = 0
 
     try:
         for task_index, task_key in enumerate(task_keys):
@@ -372,20 +352,22 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectMARLEnvCfg, agent_cfg):
                 continue
 
             lang_text = task_cfg.name
+            task_video_dir = None
+            video_episode_index = 0
+            if eval_cfg.get("video", False):
+                task_video_dir = _set_eval_video_task_folder(env, video_root, task_index, task_cfg.name)
 
             target_pos = _parse_target_pose(task_cfg.target_pose)
             _set_fixed_object_pose_env(env, target_pos)
 
             env.reset()
-            _move_cubes_to_fixed_slots(env, object_map)
             policy.reset()
             for _ in range(eval_cfg.settle_steps):
                 _step_env(env, _zero_actions(env))
 
-            timestep = 0
             rollouts_done = 0
             success_count = 0
-            episode_lengths: list[int] = []
+            episode_lengths = []
             infer_time_total = 0.0
             infer_calls = 0
             episode_steps = torch.zeros(env.unwrapped.num_envs, device=env.unwrapped.device, dtype=torch.int32)
@@ -406,7 +388,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectMARLEnvCfg, agent_cfg):
                 episode_steps += 1
                 done_mask, success_mask, error = _update_episode_state(
                     env,
-                    target_object_name,
                     dones,
                     eval_cfg.success_threshold,
                     target_pos,
@@ -420,7 +401,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectMARLEnvCfg, agent_cfg):
                         task_key,
                         task_cfg.name,
                         task_index,
-                        target_object_name,
                         done_mask,
                         success_mask,
                         episode_steps,
@@ -432,48 +412,66 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectMARLEnvCfg, agent_cfg):
                         if success_mask[i].item():
                             success_count += 1
                         episode_lengths.append(int(episode_steps[i].item()))
+                    if (
+                        eval_cfg.get("video", False)
+                        and task_video_dir
+                        and 0 in done_ids
+                    ):
+                        status = "success" if success_mask[0].item() else "fail"
+                        _rename_latest_video(task_video_dir, video_episode_index, status)
+                        video_episode_index += 1
                     if rollouts_done >= eval_cfg.num_rollouts:
                         break
                     episode_steps = torch.where(done_mask, torch.zeros_like(episode_steps), episode_steps)
                     if rollouts_done < eval_cfg.num_rollouts:
                         env.reset()
-                        _move_cubes_to_fixed_slots(env, object_map)
                         policy.reset()
                         for _ in range(eval_cfg.settle_steps):
                             _step_env(env, _zero_actions(env))
-
-                if eval_cfg.get("video", False):
-                    timestep += 1
-                    if timestep == eval_cfg.video_length:
-                        break
 
                 sleep_time = dt - (time.time() - start_time)
                 if eval_cfg.get("real_time", False) and sleep_time > 0:
                     time.sleep(sleep_time)
 
-            avg_infer_ms = (infer_time_total / infer_calls * 1000.0) if infer_calls else 0.0
-            avg_episode_steps = (sum(episode_lengths) / len(episode_lengths)) if episode_lengths else 0.0
-            success_rate = (success_count / rollouts_done) if rollouts_done else 0.0
-            metrics = {
-                "task": task_cfg.name,
-                "model_type": eval_cfg.model_type or "mamba",
-                "num_rollouts": rollouts_done,
-                "successes": success_count,
-                "success_rate": success_rate,
-                "avg_episode_steps": avg_episode_steps,
-                "avg_inference_ms": avg_infer_ms,
-            }
+            total_rollouts += rollouts_done
+            total_successes += success_count
+            total_episode_lengths.extend(episode_lengths)
+            total_infer_time += infer_time_total
+            total_infer_calls += infer_calls
+
+            
+            metrics = _build_eval_metrics(
+                model_type=eval_cfg.model_type,
+                rollouts_done=rollouts_done,
+                success_count=success_count,
+                episode_lengths=episode_lengths,
+                infer_time_total=infer_time_total,
+                infer_calls=infer_calls,
+                task_name=task_cfg.name,
+            )
             all_metrics.append(metrics)
             print(f"[METRICS] {json.dumps(metrics, indent=2)}")
-            if eval_cfg.get("video", False):
-                break
+        if all_metrics:
+            overall_metrics = _build_eval_metrics(
+                model_type=eval_cfg.model_type,
+                rollouts_done=total_rollouts,
+                success_count=total_successes,
+                episode_lengths=total_episode_lengths,
+                infer_time_total=total_infer_time,
+                infer_calls=total_infer_calls,
+                tasks=len(all_metrics),
+            )
+            print(f"[OVERALL_METRICS] {json.dumps(overall_metrics, indent=2)}")
     except KeyboardInterrupt:
         print("[INFO] Interrupted by user. Shutting down...")
     finally:
         if eval_cfg.get("output_metrics"):
-            out_path = Path(eval_cfg.output_metrics).expanduser().resolve()
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_text(json.dumps(all_metrics, indent=2))
+            out_path = os.path.abspath(os.path.expanduser(eval_cfg.output_metrics))
+            out_dir = os.path.dirname(out_path)
+            if out_dir:
+                os.makedirs(out_dir, exist_ok=True)
+            with open(out_path, "w") as f:
+                f.write(json.dumps(all_metrics, indent=2))
         env.close()
 
 

@@ -1,10 +1,10 @@
 #!/bin/bash
 
 
-python src/train.py \
+/workspace/isaaclab/_isaac_sim/python.sh src/train.py \
 batch_size=256 \
-num_epochs=5 \
-save_freq=5 \
+num_epochs=500 \
+save_freq=100 \
 max_len_data=100 \
 demos_per_task=50 \
 learning_rate=1e-4 \

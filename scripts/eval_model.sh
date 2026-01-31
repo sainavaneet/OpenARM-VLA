@@ -4,5 +4,6 @@ unset DISPLAY
 export PYOPENGL_PLATFORM=egl
 
 /workspace/isaaclab/_isaac_sim/python.sh src/eval.py \
---enable_cameras \
---headless
+    --enable_cameras \
+    --headless \
+    --model_type transformer

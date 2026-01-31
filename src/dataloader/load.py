@@ -25,10 +25,9 @@ class OpenArmDataset():
             chunck_size: int = 5,
             start_idx: int = 0,
             demos_per_task: int = 1,
+            allowed_tasks=None,
     ):
         self.data_directory = data_directory
-        # Always keep dataset tensors on CPU to avoid CUDA tensors in DataLoader workers
-        # self.device = "cpu"
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.max_len_data = max_len_data
@@ -37,12 +36,15 @@ class OpenArmDataset():
         self.demos_per_task = demos_per_task
 
         self.data_dir = sim_framework_path(self.data_directory)
-        logging.info("The dataset is loading from {}".format(self.data_dir))  # show the dataset directory
+        logging.info("The dataset is loading from {}".format(self.data_dir))
 
         self.obs_dim = obs_dim
         self.state_dim = state_dim
         self.data_directory = data_directory
         self.camera_names = ["agentview", "eye_in_hand"]
+        allowed_set = None
+        if allowed_tasks:
+            allowed_set = set(str(x) for x in allowed_tasks)
 
         benchmark_type = os.path.basename(data_directory)
         task_emb_dir = sim_framework_path("language_embeddings")
@@ -72,6 +74,8 @@ class OpenArmDataset():
             filename = os.path.basename(file).split('.')[0]
             if filename.endswith("_demo"):
                 filename = filename[:-5]
+            if allowed_set is not None and filename not in allowed_set:
+                continue
             if filename not in tasks:
                 missing_task_names = [os.path.splitext(f)[0].replace("_demo", "") for f in file_list if f.endswith(".hdf5")]
                 log.warning(
@@ -91,7 +95,6 @@ class OpenArmDataset():
 
             indices = np.argsort([int(elem[5:]) for elem in demo_keys_list])
 
-            # load the states and actions in demos according to demo_keys_list
             for i in indices[start_idx: start_idx + demos_per_task]:
 
                 demo_name = demo_keys_list[i]
@@ -101,30 +104,16 @@ class OpenArmDataset():
                 else:
                     demo_length = demo["actions"].shape[0]
 
-                # zero_states = np.zeros((1, self.max_len_data, self.state_dim), dtype=np.float32)
                 zero_actions = np.zeros((1, self.max_len_data, self.action_dim), dtype=np.float32)
-                # zero_rewards = np.zeros((1, self.max_len_data), dtype=np.float32)
-                # zero_dones = np.zeros((1, self.max_len_data), dtype=np.float32)
                 zero_mask = np.zeros((1, self.max_len_data), dtype=np.float32)
 
-                # states_data = demo['states'][:]
                 action_data = demo['actions'][:]
-                # rewards_data = demo['rewards'][:]
-                # dones_data = demo['dones'][:]
 
-                # zero_states[0, :demo_length, :] = states_data  # would be T0, ...,Tn-1, Tn, 0, 0
                 zero_actions[0, :demo_length, :] = action_data
-                # zero_rewards[0, :demo_length] = rewards_data
-                # zero_dones[0, :demo_length] = dones_data
                 zero_mask[0, :demo_length] = 1
 
-                # the_last_state = states_data[-1][:]
                 the_last_action = action_data[-1][:]
-                # the_last_reward = rewards_data[-1]
-                # the_last_done = dones_data[-1]
 
-                # zero_modelview = np.zeros((self.max_len_data, H, W, C), dtype=np.float32)
-                # zero_inhand = np.zeros((self.max_len_data, H, W, C), dtype=np.float32)
                 model_view = demo['obs']['agentview_rgb'][:]
                 eye_in_hand = demo['obs']['eye_in_hand_rgb'][:]
 
@@ -133,16 +122,7 @@ class OpenArmDataset():
 
                 robot_states = np.concatenate((joint_states, gripper_states), axis=-1)
 
-                # test_img = model_view[0]
-                # test_img = test_img[::-1, :, :]
-                # test_img = cv2.cvtColor(test_img, cv2.COLOR_RGB2BGR)
-                # cv2.imshow("test_img", test_img)
-                # cv2.waitKey(0)
-
-                # states.append(zero_states)
                 actions.append(zero_actions)
-                # rewards.append(zero_rewards)
-                # dones.append(zero_dones)
                 masks.append(zero_mask)
 
                 agentview_rgb.append(model_view)
@@ -154,8 +134,7 @@ class OpenArmDataset():
 
             f.close()
 
-        # self.states = torch.from_numpy(np.concatenate(states)).float()
-        self.actions = torch.from_numpy(np.concatenate(actions)).float()  # shape: B, T, D
+        self.actions = torch.from_numpy(np.concatenate(actions)).float()
 
         self.agentview_rgb = agentview_rgb
         self.eye_in_hand_rgb = eye_in_hand_rgb
@@ -165,15 +144,13 @@ class OpenArmDataset():
         self.data_embs = data_embs
         self.tasks = tasks
 
-        # self.rewards = torch.from_numpy(np.concatenate(rewards)).float()
-        # self.dones = torch.from_numpy(np.concatenate(dones)).float()
         self.masks = torch.from_numpy(np.concatenate(masks)).float()
 
         self.num_data = len(self.agentview_rgb)
 
         self.slices = self.get_slices()
 
-    def get_slices(self):  #Extract sample slices that meet certain conditions
+    def get_slices(self):
         slices = []
 
         min_seq_length = np.inf
@@ -184,9 +161,7 @@ class OpenArmDataset():
             if T - self.chunck_size < 0:
                 print(f"Ignored short sequence #{i}: len={T}, window={self.chunck_size}")
             else:
-                slices += [
-                    (i, start, start + self.chunck_size) for start in range(T - self.chunck_size + 1)
-                ]  # slice indices follow convention [start, end)
+                slices += [(i, start, start + self.chunck_size) for start in range(T - self.chunck_size + 1)]
 
         return slices
 
@@ -194,22 +169,14 @@ class OpenArmDataset():
         return int(self.masks[idx].sum().item())
 
     def get_all_actions(self):
-        """
-        Returns all actions from all trajectories, concatenated on dim 0 (time).
-        """
         result = []
-        # mask out invalid actions
         for i in range(len(self.masks)):
             T = int(self.masks[i].sum().item())
             result.append(self.actions[i, :T, :])
         return torch.cat(result, dim=0)
 
     def get_all_observations(self):
-        """
-        Returns all actions from all trajectories, concatenated on dim 0 (time).
-        """
         result = []
-        # mask out invalid observations
         for i in range(len(self.masks)):
             T = int(self.masks[i].sum().item())
             result.append(self.agentview_rgb[i, :T, :])
@@ -231,9 +198,7 @@ class OpenArmDataset():
 
         robot_states = self.all_states[i][start:start+1]
 
-        # Keep on CPU; device transfer handled in training loop
         if isinstance(task_emb, torch.Tensor):
-            # Ensure embedding is on CPU so DataLoader pin_memory works
             task_emb = task_emb.detach().to("cpu").float()
         else:
             task_emb = torch.tensor(task_emb, dtype=torch.float32)

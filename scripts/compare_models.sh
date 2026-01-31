@@ -32,13 +32,13 @@ else
   exit 1
 fi
 TASK_NAME="Isaac-Lift-Cube-OpenArm-Play-v0"
-NUM_EPOCHS=3000
-SAVE_FREQ=500
+NUM_EPOCHS=2000
+SAVE_FREQ=200
 BATCH_SIZE=256
 MAX_LEN=100
 DEMOS=100
 LR=1e-4
-SEED=42
+SEED=30
 ROLLOUTS_PER_SLOT=50
 NUM_ENVS=1
 SETTLE_STEPS=50
@@ -51,16 +51,16 @@ WANDB_ENTITY="sainavaneet"
 DATE_STAMP="$(date +%Y-%m-%d)"
 TIME_STAMP="$(date +%H-%M-%S)"
 OUT_ROOT="${ROOT_DIR}/outputs/compare_runs"
-OUT_DIR="${OUT_ROOT}/${DATE_STAMP}/${TIME_STAMP}"
+OUT_DIR="${OUT_ROOT}/${DATE_STAMP}_${TIME_STAMP}"
 export OUT_DIR
 
 if ! mkdir -p "${OUT_DIR}"; then
   OUT_ROOT="${HOME}/OpenARM-outputs/compare_runs"
-  OUT_DIR="${OUT_ROOT}/${DATE_STAMP}/${TIME_STAMP}"
+  OUT_DIR="${OUT_ROOT}/${DATE_STAMP}_${TIME_STAMP}"
   export OUT_DIR
   if ! mkdir -p "${OUT_DIR}"; then
     OUT_ROOT="/tmp/OpenARM-outputs/compare_runs"
-    OUT_DIR="${OUT_ROOT}/${DATE_STAMP}/${TIME_STAMP}"
+    OUT_DIR="${OUT_ROOT}/${DATE_STAMP}_${TIME_STAMP}"
     export OUT_DIR
     mkdir -p "${OUT_DIR}"
   fi
@@ -96,6 +96,11 @@ train_model() {
   local start_ts end_ts
   start_ts="$(date +%s)"
 
+  local extra_args=()
+  if [[ "${model_type}" == "transformer" ]]; then
+    extra_args+=(transformer.n_heads=4)
+  fi
+
   (
     /workspace/isaaclab/_isaac_sim/python.sh src/train.py \
       data_directory="${DATA_DIR}" \
@@ -111,7 +116,8 @@ train_model() {
       wandb.project=${WANDB_PROJECT} \
       wandb.entity=${WANDB_ENTITY} \
       seed="${SEED}" \
-      save_dir="${run_dir}"
+      save_dir="${run_dir}" \
+      "${extra_args[@]}"
   ) 1>&2
 
   end_ts="$(date +%s)"
@@ -128,6 +134,8 @@ eval_model() {
   local eval_cfg_bak
   eval_cfg_bak="$(mktemp)"
   cp "${eval_cfg}" "${eval_cfg_bak}"
+  local model_out_dir="${OUT_DIR}/${model_type}"
+  mkdir -p "${model_out_dir}"
   cat > "${eval_cfg}" <<EOF
 model_checkpoint: ${ckpt}
 run_dir: null
@@ -137,9 +145,9 @@ model_type: ${model_type}
 checkpoints_root: ${ROOT_DIR}/outputs
 num_envs: ${NUM_ENVS}
 num_rollouts: ${ROLLOUTS_PER_SLOT}
-output_metrics: ${OUT_DIR}/${model_type}.json
-video: false
-video_length: 200
+output_metrics: ${model_out_dir}/metrics.json
+video: true
+video_length: ${MAX_STEPS}
 task: ${TASK_NAME}
 real_time: false
 settle_steps: ${SETTLE_STEPS}
@@ -173,7 +181,7 @@ from pathlib import Path
 out_dir = Path(os.environ["OUT_DIR"])
 
 def load_metrics(model):
-    path = out_dir / f"{model}.json"
+    path = out_dir / model / "metrics.json"
     return json.loads(path.read_text())
 
 def load_train_seconds(model):

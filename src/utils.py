@@ -1,5 +1,6 @@
 import os
-
+from datetime import datetime
+from collections.abc import Sequence
 from pathlib import Path
 
 def _resolve_dataset_root(dataset_root: str | Path) -> str:
@@ -101,4 +102,118 @@ def _prepare_eval_cfg(eval_cfg) -> None:
         )
 
 
+def _build_eval_metrics(
+    *,
+    model_type: str | None,
+    rollouts_done: int,
+    success_count: int,
+    episode_lengths: Sequence[int],
+    infer_time_total: float,
+    infer_calls: int,
+    task_name: str | None = None,
+    tasks: int | None = None,
+) -> dict[str, float | int | str]:
+    success_rate = (success_count / rollouts_done) if rollouts_done else 0.0
+    avg_episode_steps = (sum(episode_lengths) / len(episode_lengths)) if episode_lengths else 0.0
+    avg_infer_ms = (infer_time_total / infer_calls * 1000.0) if infer_calls else 0.0
+    metrics: dict[str, float | int | str] = {
+        "model_type": model_type or "mamba",
+        "num_rollouts": rollouts_done,
+        "successes": success_count,
+        "success_rate": success_rate,
+        "avg_episode_steps": avg_episode_steps,
+        "avg_inference_ms": avg_infer_ms,
+    }
+    if task_name is not None:
+        metrics["task"] = task_name
+    if tasks is not None:
+        metrics["tasks"] = tasks
+    return metrics
 
+
+def _sanitize_name(name):
+    safe = []
+    for ch in str(name):
+        if ch.isalnum() or ch in ("-", "_", "."):
+            safe.append(ch)
+        else:
+            safe.append("_")
+    return "".join(safe).strip("_") or "task"
+
+
+def _render_camera_frame(env, sensor_name):
+    cam = env.unwrapped.scene.sensors[sensor_name].data.output["rgb"]
+    frame = cam[0] if hasattr(cam, "__getitem__") else cam
+    try:
+        import torch
+
+        if isinstance(frame, torch.Tensor):
+            frame = frame.detach().cpu().numpy()
+    except Exception:
+        pass
+    return frame
+
+
+def _setup_eval_video_recording(env, eval_cfg, record_video_cls, print_dict=None, sensor_name="main_camera"):
+    metrics_path = eval_cfg.get("output_metrics")
+    if metrics_path:
+        metrics_path = os.path.abspath(os.path.expanduser(metrics_path))
+        video_root = os.path.join(os.path.dirname(metrics_path), "videos")
+    else:
+        video_root = os.path.abspath(os.path.join("outputs", "eval", "videos"))
+    os.makedirs(video_root, exist_ok=True)
+    print(f"[INFO] Video root: {video_root}")
+    if sensor_name and hasattr(env.unwrapped.scene, "sensors") and sensor_name in env.unwrapped.scene.sensors:
+        env.render = lambda: _render_camera_frame(env, sensor_name)
+        print(f"[INFO] Recording video from sensor: {sensor_name}")
+    else:
+        if sensor_name:
+            print(f"[WARN] {sensor_name} sensor not found; falling back to default render.")
+    video_length = eval_cfg.video_length
+    if video_length is None and eval_cfg.get("max_steps") is not None:
+        video_length = eval_cfg.max_steps
+    if video_length is None:
+        video_length = 200
+    video_kwargs = {
+        "video_folder": video_root,
+        "episode_trigger": lambda episode_id: True,
+        "video_length": video_length,
+        "disable_logger": True,
+    }
+    print("[INFO] Recording videos during play.")
+    if print_dict is not None:
+        print_dict(video_kwargs, nesting=4)
+    env = record_video_cls(env, **video_kwargs)
+    return env, video_root
+
+
+def _set_eval_video_task_folder(env, video_root, task_index, task_name):
+    task_slug = _sanitize_name(task_name)
+    task_video_dir = os.path.join(video_root, f"task{task_index + 1}_{task_slug}")
+    os.makedirs(task_video_dir, exist_ok=True)
+    if hasattr(env, "video_folder"):
+        env.video_folder = task_video_dir
+    if hasattr(env, "name_prefix"):
+        env.name_prefix = f"task{task_index + 1}_{task_slug}"
+    if hasattr(env, "episode_id"):
+        env.episode_id = 0
+    print(f"[INFO] Video folder for task {task_index}: {task_video_dir}")
+    return task_video_dir
+
+
+def _rename_latest_video(video_dir, episode_index, status):
+    try:
+        files = [f for f in os.listdir(video_dir) if f.endswith(".mp4")]
+    except FileNotFoundError:
+        return None
+    if not files:
+        return None
+    latest = max(files, key=lambda f: os.path.getmtime(os.path.join(video_dir, f)))
+    new_name = f"episode_{episode_index}_{status}.mp4"
+    src = os.path.join(video_dir, latest)
+    dst = os.path.join(video_dir, new_name)
+    try:
+        os.replace(src, dst)
+    except OSError:
+        return None
+    return dst

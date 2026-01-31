@@ -14,6 +14,7 @@ services:
       DISPLAY: "${DISPLAY}"
       XAUTHORITY: "/root/.Xauthority"
       QT_X11_NO_MITSHM: "1"
+      WANDB_API_KEY: "${WANDB_API_KEY}"
     working_dir: /workspace/OpenARM-VLA
     volumes:
       - "/tmp/.X11-unix:/tmp/.X11-unix:rw"

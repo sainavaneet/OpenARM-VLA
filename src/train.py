@@ -58,6 +58,7 @@ def train(
     state_dim: int = 9,
     chunck_size: int = 5,
     start_idx: int = 0,
+    allowed_tasks: list | None = None,
 ):
     if device is None:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -74,6 +75,7 @@ def train(
         chunck_size=chunck_size,
         start_idx=start_idx,
         demos_per_task=demos_per_task,
+        allowed_tasks=allowed_tasks,
     )
     
     if betas is None:
@@ -133,6 +135,16 @@ def main(cfg: DictConfig) -> None:
     else:
         betas = [0.9, 0.9]
     
+    allowed_tasks = None
+    if getattr(cfg, "tasks", None):
+        names = []
+        for task_cfg in cfg.tasks.values():
+            name = getattr(task_cfg, "name", None)
+            if name:
+                names.append(name)
+        if names:
+            allowed_tasks = names
+
     train(
         data_directory=cfg.data_directory,
         batch_size=cfg.batch_size,
@@ -166,6 +178,7 @@ def main(cfg: DictConfig) -> None:
         state_dim=cfg.state_dim,
         chunck_size=cfg.get('chunck_size', 1),
         start_idx=cfg.get('start_idx', 0),
+        allowed_tasks=allowed_tasks,
     )
 
 
