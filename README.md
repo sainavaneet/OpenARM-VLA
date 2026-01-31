@@ -2,18 +2,16 @@
 
 
 ```bash
-
 git clone git@github.com:sainavaneet/OpenARM-VLA.git
+cd OpenARM-VLA
+```
 
+To update the submodules inside the repo, run:
+
+```bash
+git submodule update --init --recursive
 ```
 
 
-Update the submodules inside the repo 
-
-
-```bash 
-git 
-
-```
 
 
