@@ -12,11 +12,13 @@ from omegaconf import OmegaConf
 from src.utils import (
     _build_eval_metrics,
     _prepare_eval_cfg,
+    _sanitize_name,
     _set_eval_video_task_folder,
     _setup_eval_video_recording,
     _rename_latest_video,
+    _init_wandb,
+    _log_wandb_metrics,
 )
-
 
 CLI_ARGS_DIR = "openarm_isaac_lab/scripts/reinforcement_learning/rsl_rl"
 if CLI_ARGS_DIR not in sys.path:
@@ -60,6 +62,7 @@ if args_cli.model_type:
     eval_cfg.model_type = args_cli.model_type
 _prepare_eval_cfg(eval_cfg)
 print(f"[INFO] Using checkpoint: {eval_cfg.model_checkpoint}")
+wandb_run = _init_wandb(args_cli.config, eval_cfg)
 
 if eval_cfg.get("video", False):
     args_cli.enable_cameras = True
@@ -340,6 +343,7 @@ def main(env_cfg, agent_cfg):
     total_episode_lengths = []
     total_infer_time = 0.0
     total_infer_calls = 0
+    model_tag = eval_cfg.model_type or "mamba"
 
     try:
         for task_index, task_key in enumerate(task_keys):
@@ -418,7 +422,8 @@ def main(env_cfg, agent_cfg):
                         and 0 in done_ids
                     ):
                         status = "success" if success_mask[0].item() else "fail"
-                        _rename_latest_video(task_video_dir, video_episode_index, status)
+                        name_prefix = getattr(env, "name_prefix", None)
+                        _rename_latest_video(task_video_dir, video_episode_index, status, name_prefix=name_prefix)
                         video_episode_index += 1
                     if rollouts_done >= eval_cfg.num_rollouts:
                         break
@@ -451,6 +456,13 @@ def main(env_cfg, agent_cfg):
             )
             all_metrics.append(metrics)
             print(f"[METRICS] {json.dumps(metrics, indent=2)}")
+            task_slug = _sanitize_name(task_cfg.name)
+            _log_wandb_metrics(wandb_run, f"models/{model_tag}/tasks/{task_slug}", metrics)
+            if wandb_run is not None:
+                try:
+                    wandb.log({f"task_success_rate/{task_slug}": metrics.get("success_rate", 0.0)})
+                except Exception:
+                    pass
         if all_metrics:
             overall_metrics = _build_eval_metrics(
                 model_type=eval_cfg.model_type,
@@ -462,6 +474,18 @@ def main(env_cfg, agent_cfg):
                 tasks=len(all_metrics),
             )
             print(f"[OVERALL_METRICS] {json.dumps(overall_metrics, indent=2)}")
+            _log_wandb_metrics(wandb_run, f"models/{model_tag}/overall", overall_metrics)
+            if wandb_run is not None:
+                try:
+                    wandb.log({"overall_success_rate": overall_metrics.get("success_rate", 0.0)})
+                except Exception:
+                    pass
+            if wandb_run is not None:
+                try:
+                    wandb_run.summary[f"{model_tag}_overall"] = overall_metrics
+                    wandb_run.summary[f"{model_tag}_all_metrics_json"] = json.dumps(all_metrics)
+                except Exception:
+                    pass
     except KeyboardInterrupt:
         print("[INFO] Interrupted by user. Shutting down...")
     finally:
@@ -473,6 +497,11 @@ def main(env_cfg, agent_cfg):
             with open(out_path, "w") as f:
                 f.write(json.dumps(all_metrics, indent=2))
         env.close()
+        if wandb_run is not None:
+            try:
+                wandb_run.finish()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

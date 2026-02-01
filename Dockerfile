@@ -45,6 +45,8 @@ RUN mkdir -p /etc/apt/keyrings \
 ENV TZ Asia/Tokyo
 ENV MUJOCO_GL=osmesa
 ENV PYOPENGL_PLATFORM=osmesa
+ENV WANDB_MODE=online
+ENV WANDB_DISABLED=false
 
 
 
@@ -66,6 +68,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     ${UV_PYTHON} -m pip install --index-url https://download.pytorch.org/whl/cu128 torch==2.7.0+cu128 \
  && ${UV_PYTHON} -m pip uninstall -y mamba-ssm \
  && ${UV_PYTHON} -m pip install --no-cache-dir --force-reinstall --no-deps mamba-ssm --no-build-isolation \
+ && uv pip install git+https://github.com/openai/CLIP.git \
  && uv pip install -e /workspace/OpenARM-VLA
 
 WORKDIR ${WORKSPACE}/OpenARM-VLA/openarm_isaac_lab

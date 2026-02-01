@@ -38,21 +38,26 @@ BATCH_SIZE=256
 MAX_LEN=100
 DEMOS=100
 LR=1e-4
-SEED=30
+SEED=42
 ROLLOUTS_PER_SLOT=50
 NUM_ENVS=1
 SETTLE_STEPS=50
 MAX_STEPS=100
-WANDB_ENABLED=False
+WANDB_ENABLED=True
 WANDB_NAME="cube_lift_direction_tasks_compare"
 WANDB_PROJECT="OpenARM_compare_runs"
 WANDB_ENTITY="sainavaneet"
-
+SUCCESS_THRESHOLD=0.1
 DATE_STAMP="$(date +%Y-%m-%d)"
 TIME_STAMP="$(date +%H-%M-%S)"
 OUT_ROOT="${ROOT_DIR}/outputs/compare_runs"
 OUT_DIR="${OUT_ROOT}/${DATE_STAMP}_${TIME_STAMP}"
 export OUT_DIR
+
+if [[ "${WANDB_ENABLED}" == "True" || "${WANDB_ENABLED}" == "true" ]]; then
+  export WANDB_RUN_ID="${WANDB_RUN_ID:-compare_${DATE_STAMP}_${TIME_STAMP}}"
+  export WANDB_RESUME="${WANDB_RESUME:-allow}"
+fi
 
 if ! mkdir -p "${OUT_DIR}"; then
   OUT_ROOT="${HOME}/OpenARM-outputs/compare_runs"
@@ -152,7 +157,7 @@ task: ${TASK_NAME}
 real_time: false
 settle_steps: ${SETTLE_STEPS}
 max_steps: ${MAX_STEPS}
-success_threshold: 0.04
+success_threshold: ${SUCCESS_THRESHOLD}
 task_keys: null
 tasks_config: ${ROOT_DIR}/conf/tasks.yaml
 EOF

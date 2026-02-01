@@ -1,7 +1,14 @@
 import os
+import time
 from datetime import datetime
 from collections.abc import Sequence
 from pathlib import Path
+
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except Exception:
+    WANDB_AVAILABLE = False
 
 def _resolve_dataset_root(dataset_root: str | Path) -> str:
     path = Path(dataset_root).expanduser()
@@ -201,19 +208,81 @@ def _set_eval_video_task_folder(env, video_root, task_index, task_name):
     return task_video_dir
 
 
-def _rename_latest_video(video_dir, episode_index, status):
-    try:
-        files = [f for f in os.listdir(video_dir) if f.endswith(".mp4")]
-    except FileNotFoundError:
-        return None
-    if not files:
-        return None
-    latest = max(files, key=lambda f: os.path.getmtime(os.path.join(video_dir, f)))
+def _rename_latest_video(video_dir, episode_index, status, name_prefix=None):
+    expected = None
+    if name_prefix is not None:
+        expected = f"{name_prefix}-episode-{episode_index}.mp4"
     new_name = f"episode_{episode_index}_{status}.mp4"
-    src = os.path.join(video_dir, latest)
-    dst = os.path.join(video_dir, new_name)
-    try:
-        os.replace(src, dst)
-    except OSError:
+    if expected:
+        src = os.path.join(video_dir, expected)
+        if not os.path.exists(src):
+            # Wait briefly for async video writer to finish.
+            for _ in range(20):
+                time.sleep(0.1)
+                if os.path.exists(src):
+                    break
+        if os.path.exists(src):
+            dst = os.path.join(video_dir, new_name)
+            try:
+                os.replace(src, dst)
+            except OSError:
+                return None
+            return dst
+    return None
+
+
+def _init_wandb(config_path, eval_cfg):
+    if not WANDB_AVAILABLE:
         return None
-    return dst
+    access_token = os.environ.get("WANDB_ACCESS_TOKEN")
+    api_key = os.environ.get("WANDB_API_KEY")
+    if access_token and len(access_token) == 40:
+        wandb.login(key=access_token, relogin=False)
+    elif access_token:
+        print("[WARN] WANDB_ACCESS_TOKEN is not 40 chars; calling wandb.login() without key.")
+        wandb.login()
+    elif api_key and len(api_key) == 40:
+        wandb.login(key=api_key, relogin=False)
+    elif api_key:
+        print("[WARN] WANDB_API_KEY must be 40 characters; skipping API key login.")
+        wandb.login()
+    else:
+        wandb.login()
+    import yaml
+    with open(config_path, "r") as f:
+        base_cfg = yaml.safe_load(f) or {}
+
+    wandb_cfg = base_cfg.get("wandb", {})
+    if not wandb_cfg or not wandb_cfg.get("enabled", False):
+        return None
+
+    init_kwargs = {
+        "project": wandb_cfg.get("project"),
+        "entity": wandb_cfg.get("entity"),
+        "name": wandb_cfg.get("name"),
+    }
+    run_id = os.environ.get("WANDB_RUN_ID")
+    if run_id:
+        init_kwargs["id"] = run_id
+        init_kwargs["resume"] = os.environ.get("WANDB_RESUME", "allow")
+    run = wandb.init(**init_kwargs)
+
+    if run is not None:
+        run.config["eval_cfg"] = dict(eval_cfg) if hasattr(eval_cfg, "items") else eval_cfg
+        run.config["model_cfg"] = base_cfg
+        run.config["model_checkpoint"] = eval_cfg.get("model_checkpoint", None)
+        run.config["model_type"] = eval_cfg.get("model_type", None)
+        run.config["dataset_root"] = eval_cfg.get("dataset_root", None)
+    return run
+
+
+def _log_wandb_metrics(run, prefix, metrics):
+    if run is None or not WANDB_AVAILABLE:
+        return
+    log_dict = {}
+    for key, value in metrics.items():
+        if key == "task":
+            continue
+        log_dict[f"{prefix}/{key}"] = value
+    if log_dict:
+        wandb.log(log_dict)

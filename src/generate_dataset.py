@@ -219,7 +219,12 @@ def _collect_task(env, policy, cfg: DictConfig, task_cfg: Any, simulation_app):
                         out_f,
                         demo_key,
                         data,
-                        {"success": success, "target_pose": pose, "pose_index": save_pose_idx},
+                        {
+                            "success": success,
+                            "target_pose": pose,
+                            "pose_index": save_pose_idx,
+                            "task": task_cfg.name,
+                        },
                     )
                     demo_global_idx += 1
                     print(f"[SAVED] {out_path}::{demo_key}")

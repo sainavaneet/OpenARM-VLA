@@ -143,11 +143,35 @@ I created three cameras:
 </div>
 ```
 
+This the code that i added for `OpenARM-VLA/openarm_isaac_lab/source/openarm/openarm/tasks/manager_based/openarm_manipulation/unimanual/lift/lift_env_cfg.py` file to add the cameras:
 
+```python
+    camera_link0: TiledCameraCfg = TiledCameraCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/openarm_link0/CameraLink0",
+        offset=TiledCameraCfg.OffsetCfg(
+            pos=(0.0, 0.0, 0.2),
+            rot=(-0.29884, 0.64086, -0.64086, 0.29884),
+        ),
+        data_types=["rgb"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=12.0,
+            focus_distance=400.0,
+            horizontal_aperture=20.955,
+            clipping_range=(0.1, 20.0),
+        ),
+        width=128,
+        height=128,
+    )
+```
 
 # Dataset & Demonstrations
 
 I collected 100 demonstration for each task that is metnioned in the `conf/tasks.yaml` file.
+
+- Dataset can be generated using the `src/generate_dataset.py` script.
+- The script collects the demonstration dataset for each task mentioned in the `conf/tasks.yaml` file.
+  
+If the task is successful, the script will save the demonstration dataset in the `data/demo_<id>/` directory. Otherwise, the script will skip the demonstration.
 
 ```yaml
 tasks:
@@ -174,3 +198,184 @@ data/demo_<id>/
     joint_states     (T, 6)            float32
     gripper_states   (T, 2)            float32
 ```
+- The dataset is sotred in the form of `hdf5` files.
+
+```{=html}
+<div style="display:flex; gap:16px; flex-wrap:wrap;">
+  <div style="width:49%;">
+    <video controls width="100%" style="border-radius:8px;">
+      <source src="videos/middle_table_all_demos.mp4" type="video/mp4">
+    </video>
+    <div style="text-align:center; margin-top:8px;">Lift to middle</div>
+  </div>
+  <div style="width:49%;">
+    <video controls width="100%" style="border-radius:8px;">
+      <source src="videos/right_lower_all_demos.mp4" type="video/mp4">
+    </video>
+    <div style="text-align:center; margin-top:8px;">Right-side lower</div>
+  </div>
+</div>
+```
+
+# Training the Model 
+
+
+Model can be trained using the `scripts/train_model.sh` script.
+
+- Both `mamba` and `transformer` models can be trained using the `scripts/train_model.sh` script.
+- The config file is `conf/config.yaml` file contains the training parameters and the dataset creation parameters
+- I trained the model for 500 epochs and saved the model in the `outputs/train/mamba/` and `outputs/train/transformer/` directories.
+- eval videos are stored in the `outputs/eval/mamba/` and `outputs/eval/transformer/` directories.
+
+
+To embed the images i used the resnets from the `MambaVLA/backbones/resnet/resnet_img_encoder.py` file.
+
+
+```python
+obs_encoder = MultiImageResNetEncoder(
+    camera_names=["agentview", "eye_in_hand"],
+    latent_dim=256,
+    input_channels=3,
+)
+```
+And for the language encoder i used the clip model from the `MambaVLA/backbones/clip/clip_lang_encoder.py` file.
+```python
+language_encoder = LangClip(
+    freeze_backbone=True,
+    model_name="ViT-B/32",
+)
+```
+
+So my model contains the following parameters 
+
+- Total number of parameters: 177,773,96M
+- Trainable parameters: 26,496,648
+- Frozen parameters: 151,277,312
+
+Almost both Mamba and Transformer contains almost similar number of parameters.
+
+```python
+model_mamba = create_mambavla_model(
+    dataloader=None,
+    camera_names=["agentview", "eye_in_hand"],
+    layers=5,
+    latent_dim=256,
+    action_dim=8,
+    lang_emb_dim=512,
+    embed_dim=256,
+    obs_tok_len=2,
+    action_seq_len=5,
+    model_type="mamba",
+)
+```
+
+```python
+    transformer_cfg={
+        "n_heads": 8,
+        "attn_pdrop": 0.1,
+        "resid_pdrop": 0.1,
+        "mlp_pdrop": 0.0,
+        "bias": False,
+        "use_rot_embed": False,
+        "rotary_xpos": False,
+    },
+)
+```
+
+
+# Evaluation Metrics
+
+
+I evaluated the models on the following metrics:
+
+- Success Rate
+- Inference Time 
+- Average Episode Steps
+- Average Inference Time
+- Training Time
+- Computation Cost 
+
+
+## Success Rate
+
+As i mentiond in the above sections that i collected 100 demonstrations for each task
+
+tasks are basically `pick_the_cube_and_lift_it_to_the_middle_of_the_table` and `pick_the_cube_and_reach_to_the_right_side_but_slighlty_lower`
+
+so it find that the task is successfully completed i basically check the error between the target pose and the current pose of the cube.
+
+I gave some threshold for the error and if the error is less than the threshold then i consider the task as **successful** otherwise i consider the task as **failed**.
+
+
+
+
+# Failures Faced and How I Solved Them
+
+This section summarizes the main problems I encountered during environment setup, data collection, and model training, along with the fixes.
+
+## 1) Multi-cube scene caused floating cubes
+**Issue:** When I spawned 3 cubes and shifted their colors to select a target cube, some cubes spawned in mid‑air and caused collisions or unstable physics.  
+**Fix:** I reduced the scene to a single cube for the lifting policy and fixed the target pose for that cube. This kept the scene stable and matched the policy assumptions.
+
+
+```{=html}
+<div style="margin-top: 8px;">
+  <video width="640" height="360" controls>
+    <source src="videos/extra_frames.mov" type="video/quicktime">
+    Your browser does not support the video tag.
+  </video>
+  <p>
+    So as you can observe in the video, when the episode changes and the cube is placed in a different
+    position, extra frames get recorded. These frames are stored in the dataset, which is a problem
+    because the model trains on noisy frames and struggles to learn the task.
+  </p>
+  <p>
+    To solve this, I added a short settling phase at the beginning of each episode. I publish zero
+    actions for a few steps, let the robot and physics settle, and only then start recording the dataset.
+  </p>
+  <p>
+    This issue happens because Isaac Sim needs time to stabilize the physics after the cube is moved,
+    which produces transient frames.
+  </p>
+  <p>
+    A cleaner fix is to use the built-in `DexCube`, but because I needed different cube colors, I kept
+    the custom cube and constrained the task to simple target directions.
+  </p>
+</div>
+```
+
+## 2) Camera orientation mismatch
+**Issue:** The cameras initially produced incorrect viewpoints because the quaternion order/axis convention was wrong.  
+**Fix:** I converted the orientation from `w, x, y, z` to the correct convention for Isaac Sim (`-x, w, z, -y`) and verified the view. I also tuned focal length (e.g., 12) for clear observations.
+
+## 3) Dataset contamination and failed rollouts
+**Issue:** Some episodes failed because the cube placement was too fast, and early frames contained visuals from the previous episode.  
+**Fix:** I added warm‑up steps at the start of each rollout and skipped failed episodes (no save if success conditions were not met). This improved dataset quality.
+
+## 4) Mamba + IsaacLab environment conflicts
+**Issue:** `mamba-ssm` initially failed to build under Python 3.11 (required by Isaac Sim 5.1.0), and CUDA kernels were incompatible with the RTX PRO 6000 (sm_120).  
+**Fix:** I installed `mamba-ssm` from source and upgraded to a PyTorch build that supports newer CUDA architectures:
+
+```bash
+pip install --no-cache-dir --no-binary :all: --no-build-isolation "mamba-ssm[causal-conv1d]"
+pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
+pip install mamba-ssm --no-build-isolation
+```
+
+## 5) Task-policy mismatch
+**Issue:** I initially added two cubes but the teacher policy was trained for a single cube, so the policy moved to incorrect targets.  
+**Fix:** I constrained the environment to a single cube and fixed the command to a consistent target pose (e.g., middle position), which aligned with the trained policy.
+
+## 6) Environment setup steps
+**Steps taken to stabilize the project setup:**
+- Created a new environment config and registered it in the task init.  
+- Added cameras for data collection.  
+- Disabled visualization markers to avoid distraction in RGB frames.  
+- Verified task registration and command targets before rollout.
+
+
+As My main goal is to train the model with both the transformer and the mamba architecture and compare the results.
+
+So i chose with the simple task with single cube and for each task i gave a direction like `lift_it_to_the_middle_of_the_table` or `reach_to_the_right_side_but_slighlty_lower`
+
+So i can easily compare the results of the transformer and the mamba architecture.

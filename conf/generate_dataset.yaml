@@ -14,7 +14,8 @@ checkpoint: ./src/RL_policy/model_1999.pt
 
 
 
-dataset_root: /home/navaneet/OPENARM/OpenARM-VLA/datasets/openarm_cube_lift_direction_tasks
+dataset_root: /workspace/OpenARM-VLA/datasets/openarm_cube_lift_direction_tasks2
+
 
 
 

@@ -15,6 +15,7 @@ services:
       XAUTHORITY: "/root/.Xauthority"
       QT_X11_NO_MITSHM: "1"
       WANDB_API_KEY: "${WANDB_API_KEY}"
+      WANDB_ACCESS_TOKEN: "${WANDB_ACCESS_TOKEN}"
     working_dir: /workspace/OpenARM-VLA
     volumes:
       - "/tmp/.X11-unix:/tmp/.X11-unix:rw"
