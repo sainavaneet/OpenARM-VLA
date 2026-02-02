@@ -1,0 +1,7 @@
+defaults:
+  - tasks
+  - _self_
+
+root: /home/navaneet/OPENARM/OpenARM-VLA/datasets/openarm_pick_the_color_cube_tasks
+out: /home/navaneet/OPENARM/OpenARM-VLA/datasets/openarm_pick_the_color_cube_tasks_merged
+num_demos: null
