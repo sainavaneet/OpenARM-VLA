@@ -5,7 +5,7 @@ defaults:
 task: Isaac-Lift-Cube-OpenArm-Play-v0
 num_envs: 1
 
-num_demos: 100
+num_demos: 10
 
 
 
@@ -14,7 +14,7 @@ checkpoint: ./src/RL_policy/model_1999.pt
 
 
 
-dataset_root: /workspace/OpenARM-VLA/datasets/openarm_cube_lift_direction_tasks2
+dataset_root: datasets/OpenARM-VLA/datasets/openarm_cube_lift_direction_tasks2
 
 
 
