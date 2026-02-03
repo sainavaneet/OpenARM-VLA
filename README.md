@@ -102,9 +102,6 @@ docker compose up -d --build
 
 ```
 
-```bash
-docker compose exec openarm bash
-```
 For Docker builds on Blackwell GPUs, replace the install step in `Dockerfile` with:
 
 ```bash
@@ -116,6 +113,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
  && ${UV_PYTHON} -m pip install --no-cache-dir --force-reinstall --no-deps mamba-ssm --no-build-isolation \
  && uv pip install -e ${OPENARM_ROOT}
 ```
+
+```bash
+docker compose exec openarm bash
+```
+
 Docker equivalents are under `scripts/docker/`:
 
 ```bash
