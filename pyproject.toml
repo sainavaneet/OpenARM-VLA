@@ -22,7 +22,7 @@ dependencies = [
   "numpy<2",
   "pillow==11.3.0",
   "packaging<24",
-  "clip",
+  "clip @ git+https://github.com/openai/CLIP.git",
 ]
 
 [tool.setuptools]
