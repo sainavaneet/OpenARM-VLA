@@ -1,13 +1,13 @@
 model_checkpoint: null
 run_dir: null
 lang_emb: null
-dataset_root: datasets/openarm_cube_lift_direction_tasks2
+dataset_root: datasets/openarm_cube_lift_direction_tasks
 model_type: mamba
 checkpoints_root: outputs
 num_envs: 1
 num_rollouts: 10
 output_metrics: outputs/metrics.json
-video: true
+video: false
 video_length: 100
 task: Isaac-Lift-Cube-OpenArm-Play-v0
 real_time: false
