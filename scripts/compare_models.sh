@@ -5,17 +5,7 @@ unset DISPLAY
 export PYOPENGL_PLATFORM=egl
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON_BIN=""
-if command -v python3 >/dev/null 2>&1; then
-  PYTHON_BIN="python3"
-elif command -v python >/dev/null 2>&1; then
-  PYTHON_BIN="python"
-elif [[ -x "/workspace/isaaclab/_isaac_sim/python.sh" ]]; then
-  PYTHON_BIN="/workspace/isaaclab/_isaac_sim/python.sh"
-else
-  echo "ERROR: python not found (tried python3, python, /workspace/isaaclab/_isaac_sim/python.sh)" >&2
-  exit 1
-fi
+PYTHON_BIN="python"
 DATA_DIR_CFG="$("$PYTHON_BIN" - <<'PY'
 from omegaconf import OmegaConf
 from pathlib import Path
@@ -102,7 +92,7 @@ train_model() {
   fi
 
   (
-    /workspace/isaaclab/_isaac_sim/python.sh src/train.py \
+    "${PYTHON_BIN}" src/train.py \
       data_directory="${DATA_DIR}" \
       batch_size="${BATCH_SIZE}" \
       num_epochs="${NUM_EPOCHS}" \
@@ -157,7 +147,7 @@ task_keys: null
 tasks_config: ${ROOT_DIR}/conf/tasks.yaml
 EOF
 
-  /workspace/isaaclab/_isaac_sim/python.sh src/eval.py \
+  "${PYTHON_BIN}" src/eval.py \
     --config "${ROOT_DIR}/conf/config.yaml" \
     --enable_cameras \
     --headless
