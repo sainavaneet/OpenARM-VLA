@@ -1,0 +1,4 @@
+[submodule "openarm_isaac_lab"]
+	path = openarm_isaac_lab
+	url = git@github.com:sainavaneet/openarm_isaac_lab.git
+	branch = one_cube
