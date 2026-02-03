@@ -1,0 +1,37 @@
+services:
+  openarm2:
+    image: openarm2:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: openarm2
+    entrypoint: bash
+    network_mode: host
+    ipc: host
+    environment:
+      ACCEPT_EULA: "Y"
+      PRIVACY_CONSENT: "Y"
+      DISPLAY: "${DISPLAY}"
+      XAUTHORITY: "/root/.Xauthority"
+      QT_X11_NO_MITSHM: "1"
+      WANDB_API_KEY: "${WANDB_API_KEY}"
+      WANDB_ACCESS_TOKEN: "${WANDB_ACCESS_TOKEN}"
+    working_dir: /workspace/OpenARM-VLA
+    volumes:
+      - "/tmp/.X11-unix:/tmp/.X11-unix:rw"
+      - "${HOME}/.Xauthority:/root/.Xauthority:rw"
+      - "${HOME}/docker/isaac-sim/cache/kit:/isaac-sim/kit/cache:rw"
+      - "${HOME}/docker/isaac-sim/cache/ov:/root/.cache/ov:rw"
+      - "${HOME}/docker/isaac-sim/cache/pip:/root/.cache/pip:rw"
+      - "${HOME}/docker/isaac-sim/cache/glcache:/root/.cache/nvidia/GLCache:rw"
+      - "${HOME}/docker/isaac-sim/cache/computecache:/root/.nv/ComputeCache:rw"
+      - "${HOME}/docker/isaac-sim/logs:/root/.nvidia-omniverse/logs:rw"
+      - "${HOME}/docker/isaac-sim/data:/root/.local/share/ov/data:rw"
+      - "${HOME}/docker/isaac-sim/documents:/root/Documents:rw"
+      - "/home/${USER}/main/OpenARM-VLA:/workspace/OpenARM-VLA"
+      - "/home/${USER}/main/OpenARM-VLA/datasets:/workspace/OpenARM-VLA/datasets"
+      - "/home/${USER}/main/OpenARM-VLA/checkpoints:/workspace/OpenARM-VLA/checkpoints"
+    # Requires NVIDIA Container Toolkit on host
+    gpus: all
+    tty: true
+    stdin_open: true

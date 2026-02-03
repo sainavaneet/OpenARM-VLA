@@ -1,5 +1,3 @@
-
-
 defaults:
   - generate_dataset
   - eval_model
