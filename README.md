@@ -127,5 +127,4 @@ bash scripts/docker/compare_models.sh
 
 # Eval
 
-
 ![Transformer vs Mamba training comparison](assets/complete_stats.png)
