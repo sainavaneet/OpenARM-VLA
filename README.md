@@ -130,3 +130,10 @@ bash scripts/docker/compare_models.sh
 # Eval
 
 ![Transformer vs Mamba training comparison](assets/complete_stats.png)
+
+
+## REPORT
+
+Download the report here:
+
+https://github.com/sainavaneet/OpenARM-VLA/releases/download/report/OpenARM-VLA.html
