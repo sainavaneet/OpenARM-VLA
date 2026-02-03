@@ -1,0 +1,56 @@
+
+
+defaults:
+  - generate_dataset
+  - eval_model
+  - mamba
+  - tasks
+  - transformer
+  - _self_
+
+data_directory: ${dataset_root}
+
+
+max_len_data: 100
+demos_per_task: 100
+
+obs_dim: 9
+action_dim: 8
+state_dim: 9
+
+image_encoder_type: resnet
+latent_dim: 256
+embed_dim: 256
+n_layer: 5
+d_intermediate: 256
+obs_tok_len: 2
+action_seq_len: 5
+sampling_steps: 4
+
+batch_size: 256
+num_epochs: 300
+
+learning_rate: 1e-4
+transformer_weight_decay: 0.05
+obs_encoder_weight_decay: 0.05
+betas: [0.9, 0.9]
+enable_ema: true
+ema_decay_rate: 0.995
+enable_data_scaling: true
+data_scaler_type: minmax
+save_freq: 200
+num_workers: 4
+
+chunck_size: 5
+
+seed: 42
+
+wandb:
+  project: MambaVLA-Immitaion-Learning
+  entity: sainavaneet
+  name: new_model
+  enabled: false
+
+device: null
+
+save_dir: ./outputs/train/${model_type}/${basename:${data_directory}}/${now:%Y-%m-%d}/${now:%H-%M-%S}/
