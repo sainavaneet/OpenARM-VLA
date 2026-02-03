@@ -1,12 +1,12 @@
-model_checkpoint: /workspace/OpenARM-VLA/outputs/2026-02-01/13-05-03/train/mamba/openarm_cube_lift_direction_tasks2/final_model.pth
+model_checkpoint: null
 run_dir: null
 lang_emb: null
-dataset_root: /workspace/OpenARM-VLA/datasets/openarm_cube_lift_direction_tasks2
+dataset_root: datasets/openarm_cube_lift_direction_tasks2
 model_type: mamba
-checkpoints_root: /workspace/OpenARM-VLA/outputs
+checkpoints_root: outputs
 num_envs: 1
 num_rollouts: 10
-output_metrics: /workspace/OpenARM-VLA/outputs/compare_runs/2026-02-01_13-05-03/mamba/metrics.json
+output_metrics: outputs/metrics.json
 video: true
 video_length: 100
 task: Isaac-Lift-Cube-OpenArm-Play-v0
@@ -15,4 +15,4 @@ settle_steps: 50
 max_steps: 100
 success_threshold: 0.1
 task_keys: null
-tasks_config: /workspace/OpenARM-VLA/conf/tasks.yaml
+tasks_config: conf/tasks.yaml

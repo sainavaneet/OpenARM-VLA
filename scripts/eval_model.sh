@@ -3,13 +3,20 @@
 unset DISPLAY
 export PYOPENGL_PLATFORM=egl
 
-LOG_DIR="/workspace/OpenARM-VLA/outputs"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LOG_DIR="${ROOT_DIR}/outputs"
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/eval_model_$(date +%Y-%m-%d_%H-%M-%S).log"
 exec > >(tee -a "${LOG_FILE}") 2>&1
+
+CHECKPOINT="${1:-}"
+if [[ -z "${CHECKPOINT}" ]]; then
+  echo "Usage: $0 /path/to/checkpoint.pth" >&2
+  exit 1
+fi
 
 python src/eval.py \
     --enable_cameras \
     --headless \
     --model_type mamba \
-    --checkpoint /workspace/OpenARM-VLA/outputs/2026-02-02/11-19-37/train/mamba/openarm_cube_lift_direction_tasks2/epoch_00200.pth
+    --checkpoint "${CHECKPOINT}"
