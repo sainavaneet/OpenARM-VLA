@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Training / dataset artifacts
+checkpoints/
+datasets/
+outputs/
+wandb/
+
+# Large model / dataset files
+*.pth
+*.pt
+*.hdf5
+*.wandb
+
+# Logs
+*.log
+
