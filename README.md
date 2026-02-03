@@ -102,7 +102,7 @@ docker compose up -d --build
 
 ```
 
-For Docker builds on Blackwell GPUs, replace the install step in `Dockerfile` with:
+For Docker builds on **Blackwell GPUs**, replace the install step in `Dockerfile` with:
 
 ```bash
 WORKDIR ${OPENARM_ROOT}
