@@ -5,7 +5,7 @@ defaults:
 task: Isaac-Lift-Cube-OpenArm-Play-v0
 num_envs: 1
 
-num_demos: 10
+num_demos: 100
 
 
 
