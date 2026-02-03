@@ -14,7 +14,7 @@ checkpoint: ./src/RL_policy/model_1999.pt
 
 
 
-dataset_root: datasets/openarm_cube_lift_direction_tasks2
+dataset_root: datasets/openarm_cube_lift_direction_tasks
 
 
 
