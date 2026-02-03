@@ -8,7 +8,7 @@ import os
 import torch
 import numpy as np
 from MambaVLA.utils.sim_path import sim_framework_path
-from MambaVLA.language_embeddings.genrate_embeddings import create_embeddings_from_dataset_dir
+from MambaVLA.utils.embeddings.genrate_embeddings import create_embeddings_from_dataset_dir
 
 log = logging.getLogger(__name__)
 
