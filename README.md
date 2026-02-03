@@ -71,6 +71,8 @@ Recommended flow:
 2. Train the model.
 3. Evaluate the model (or compare models).
 
+
+
 `scripts/create_dataset.sh` generates the dataset using `conf/generate_dataset.yaml`.
 
 ```bash
@@ -121,3 +123,9 @@ bash scripts/docker/train_model.sh
 bash scripts/docker/eval_model.sh
 bash scripts/docker/compare_models.sh
 ```
+
+
+# Eval
+
+
+![Transformer vs Mamba training comparison](assets/complete_stats.png)
