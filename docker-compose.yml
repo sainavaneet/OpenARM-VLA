@@ -1,10 +1,10 @@
 services:
-  openarm2:
-    image: openarm2:local
+  openarm:
+    image: openarm:local
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: openarm2
+    container_name: openarm
     entrypoint: bash
     network_mode: host
     ipc: host

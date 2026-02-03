@@ -50,6 +50,7 @@ python -m pip install --index-url https://download.pytorch.org/whl/cu128 torch==
 python -m pip install --no-cache-dir --force-reinstall --no-deps mamba-ssm --no-build-isolation
 ```
 
+
 # Scripts
 
 Recommended flow:
@@ -79,7 +80,32 @@ bash scripts/eval_model.sh mamba /path/to/checkpoint.pth
 ```
 
 
+
 # Docker setup 
 
-```bash 
+```bash
+docker compose up -d --build
+
+```
+
+```bash
+docker compose exec openarm bash
+```
+For Docker builds on Blackwell GPUs, replace the install step in `Dockerfile` with:
+
+```bash
+WORKDIR ${OPENARM_ROOT}
+ENV UV_PYTHON=/workspace/isaaclab/_isaac_sim/kit/python/bin/python3
+RUN --mount=type=cache,target=/root/.cache/pip \
+    ${UV_PYTHON} -m pip install --index-url https://download.pytorch.org/whl/cu128 torch==2.7.0+cu128 \
+ && ${UV_PYTHON} -m pip uninstall -y mamba-ssm \
+ && ${UV_PYTHON} -m pip install --no-cache-dir --force-reinstall --no-deps mamba-ssm --no-build-isolation \
+ && uv pip install -e ${OPENARM_ROOT}
+```
+Docker equivalents are under `scripts/docker/`:
+
+```bash
+bash scripts/docker/train_model.sh
+bash scripts/docker/eval_model.sh
+bash scripts/docker/compare_models.sh
 ```
