@@ -14,7 +14,7 @@ wandb/
 *.pt
 *.hdf5
 *.wandb
+!/src/RL_policy/model_1999.pt
 
 # Logs
 *.log
-
