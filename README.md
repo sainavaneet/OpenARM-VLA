@@ -1,4 +1,4 @@
-# Setup
+# OpenARM VLA Imitation Learning (Transformer + Mamba) Framework
 
 Clone the repo:
 
@@ -16,6 +16,18 @@ git submodule update --init --recursive
 ```
 
 # Local setup
+
+First install Isaac Lab via pip using the official guide:
+
+```
+https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/pip_installation.html
+```
+
+Then activate the environment:
+
+```bash
+conda activate env_isaaclab
+```
 
 Install the OpenARM Isaac Lab package:
 
