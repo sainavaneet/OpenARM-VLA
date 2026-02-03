@@ -2,3 +2,7 @@
 	path = openarm_isaac_lab
 	url = git@github.com:sainavaneet/openarm_isaac_lab.git
 	branch = one_cube
+[submodule "MambaVLA"]
+	path = MambaVLA
+	url = git@github.com:sainavaneet/MambaVLA.git
+	branch = test2
