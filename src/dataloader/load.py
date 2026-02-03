@@ -5,6 +5,7 @@ import pickle
 import cv2
 import h5py
 import os
+from pathlib import Path
 import torch
 import numpy as np
 from MambaVLA.utils.sim_path import sim_framework_path
@@ -35,7 +36,7 @@ class OpenArmDataset():
         self.start_idx = start_idx
         self.demos_per_task = demos_per_task
 
-        self.data_dir = sim_framework_path(self.data_directory)
+        self.data_dir = self._resolve_data_dir(self.data_directory)
         logging.info("The dataset is loading from {}".format(self.data_dir))
 
         self.obs_dim = obs_dim
@@ -164,6 +165,24 @@ class OpenArmDataset():
                 slices += [(i, start, start + self.chunck_size) for start in range(T - self.chunck_size + 1)]
 
         return slices
+
+    @staticmethod
+    def _resolve_data_dir(data_directory: os.PathLike) -> str:
+        path = Path(data_directory).expanduser()
+        if path.is_absolute() and path.exists():
+            return str(path)
+
+        repo_root = Path(__file__).resolve().parents[2]
+        candidates = [
+            repo_root / path,
+            Path.cwd() / path,
+            Path(sim_framework_path(str(path))),
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate.resolve())
+
+        return str(Path(sim_framework_path(str(path))).resolve())
 
     def get_seq_length(self, idx):
         return int(self.masks[idx].sum().item())
