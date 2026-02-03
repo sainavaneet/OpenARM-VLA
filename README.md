@@ -14,12 +14,14 @@ make sure you have the docker setup available with the GPU access
 # update submodules
 
 ```
+cd OpenARM-VLA
 git submodule update --init --recursive
 
 ```
 
 # Local Setup
 
+python -m pip install -e openarm_isaac_lab/source/openarm
 
 
 # Docker setup 
